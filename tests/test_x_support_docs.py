@@ -34,6 +34,11 @@ def install_skill(temporary_directory):
         assets / "whisper_prompts",
         dirs_exist_ok=True,
     )
+    shutil.copytree(
+        ROOT / "scripts/glossaries",
+        assets / "glossaries",
+        dirs_exist_ok=True,
+    )
     return installed_skill, assets
 
 
@@ -108,13 +113,17 @@ class XSupportDocumentationTests(unittest.TestCase):
             "check_srt_health.py",
             "clean_subs.py",
             "correct_srt.py",
+            "glossary.py",
             "llm_correct_srt.py",
+            "llm_provider.py",
             "verify_figures.py",
             "prepare_cover.sh",
             "smart_crop.py",
             "notes-template.tex",
             "whisper_prompts/nju_os.txt",
             "whisper_prompts/glossary_nju_os.json",
+            "glossaries/general.json",
+            "glossaries/nju-os.json",
         }
         for relative_path in required_assets:
             self.assertIn(f"{ASSETS_PLACEHOLDER}/{relative_path}", self.skill)

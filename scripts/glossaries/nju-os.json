@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "domain": "nju-os",
+  "entries": {
+    "佛克": {"replacement": "fork", "evidence": ["legacy:nju_os"]},
+    "叉口": {"replacement": "fork", "evidence": ["legacy:nju_os"]},
+    "系同调用": {"replacement": "系统调用", "evidence": ["legacy:nju_os"]},
+    "E L F": {"replacement": "ELF", "evidence": ["legacy:nju_os"]},
+    "米克尔": {"replacement": "Intel", "evidence": ["legacy:nju_os"]},
+    "英特儿": {"replacement": "Intel", "evidence": ["legacy:nju_os"]}
+  }
+}

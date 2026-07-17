@@ -3,6 +3,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -61,14 +63,15 @@ class CorrectionTests(unittest.TestCase):
                     "corrections": [
                         {"index": 1, "text": "正确"},
                         {"index": 2, "text": "原文"},
-                    ]
+                    ],
+                    "glossary_candidates": [],
                 },
             ]
         )
         with tempfile.TemporaryDirectory() as directory, mock.patch(
             "llm_correct_srt.time.sleep"
         ):
-            corrections, _, _, _ = llm_correct_srt.correct_segment(
+            corrections, _, _, _, _ = llm_correct_srt.correct_segment(
                 entries, None, "general", Path(directory), provider
             )
 
@@ -81,7 +84,7 @@ class CorrectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, mock.patch(
             "llm_correct_srt.time.sleep"
         ):
-            corrections, _, _, _ = llm_correct_srt.correct_segment(
+            corrections, _, _, _, _ = llm_correct_srt.correct_segment(
                 [entry], None, "general", Path(directory), provider
             )
 
@@ -91,8 +94,14 @@ class CorrectionTests(unittest.TestCase):
     def test_cache_changes_when_subtitle_text_changes(self):
         provider = FakeProvider(
             [
-                {"corrections": [{"index": 1, "text": "first-fixed"}]},
-                {"corrections": [{"index": 1, "text": "second-fixed"}]},
+                {
+                    "corrections": [{"index": 1, "text": "first-fixed"}],
+                    "glossary_candidates": [],
+                },
+                {
+                    "corrections": [{"index": 1, "text": "second-fixed"}],
+                    "glossary_candidates": [],
+                },
             ]
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -101,7 +110,7 @@ class CorrectionTests(unittest.TestCase):
             second = [llm_correct_srt.SrtEntry(1, 0, 1, "second")]
 
             llm_correct_srt.correct_segment(first, None, "general", cache, provider)
-            result, _, was_cached, _ = llm_correct_srt.correct_segment(
+            result, _, _, was_cached, _ = llm_correct_srt.correct_segment(
                 second, None, "general", cache, provider
             )
 
@@ -141,6 +150,47 @@ class CorrectionTests(unittest.TestCase):
 
         self.assertEqual(2, result.returncode)
         self.assertIn("OPENAI_API_KEY", result.stderr)
+
+    def test_successful_run_updates_evidenced_glossary(self):
+        provider = FakeProvider(
+            [
+                {
+                    "corrections": [{"index": 1, "text": "使用 Python"}],
+                    "glossary_candidates": [
+                        {"original": "派散", "corrected": "Python", "indices": [1]}
+                    ],
+                }
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "audio.srt"
+            output = root / "corrected.srt"
+            source.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\n使用派散\n", encoding="utf-8"
+            )
+            argv = [
+                "llm_correct_srt.py",
+                "--srt",
+                str(source),
+                "--out",
+                str(output),
+                "--context",
+                "通用视频",
+                "--glossary-root",
+                str(root / "glossaries"),
+            ]
+            with mock.patch.object(sys, "argv", argv), mock.patch(
+                "llm_correct_srt.create_provider", return_value=provider
+            ), redirect_stdout(StringIO()):
+                result = llm_correct_srt.main()
+
+            saved = (root / "glossaries" / "general.json").read_text(encoding="utf-8")
+            audit_exists = (root / "glossary_update.json").exists()
+
+        self.assertEqual(0, result)
+        self.assertIn("派散", saved)
+        self.assertTrue(audit_exists)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 
+from glossary import DEFAULT_USER_ROOT, build_prompt as build_glossary_prompt
+from glossary import detect_domains, update_glossary
 from llm_provider import Provider, ProviderError, create_provider
 
 
@@ -165,8 +167,10 @@ SYSTEM_PROMPT = """你是专业的中英技术讲座字幕修正助手。
 - 保留讲者的口语填充词和自然停顿
 - 绝不意译、改写、合并或拆分条目
 - 画面可能提供术语参考；若画面与文本冲突以画面为准
+- 仅把可复用的明确术语错误列入 glossary_candidates；每项必须携带出现该错误的原字幕 index
 
-输出：JSON 对象 {"corrections": [{"index": int, "text": str}, ...]}
+输出：JSON 对象 {"corrections": [{"index": int, "text": str}, ...],
+"glossary_candidates": [{"original": str, "corrected": str, "indices": [int, ...]}]}
 数组长度必须等于输入条目数 N。不要解释，不要代码块。"""
 
 
@@ -209,9 +213,22 @@ SCHEMA = {
                 "required": ["index", "text"],
                 "additionalProperties": False,
             },
-        }
+        },
+        "glossary_candidates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "original": {"type": "string"},
+                    "corrected": {"type": "string"},
+                    "indices": {"type": "array", "items": {"type": "integer"}},
+                },
+                "required": ["original", "corrected", "indices"],
+                "additionalProperties": False,
+            },
+        },
     },
-    "required": ["corrections"],
+    "required": ["corrections", "glossary_candidates"],
     "additionalProperties": False,
 }
 
@@ -248,7 +265,7 @@ def correct_segment(
         blob = json.loads(cache_path.read_text(encoding="utf-8"))
         # JSON 读出的 key 是 str，需转回 int
         corrs = {int(k): v for k, v in blob["corrections"].items()}
-        return corrs, frame, True, 0.0
+        return corrs, blob.get("glossary_candidates", []), frame, True, 0.0
     last_err = None
     for attempt in range(3):
         try:
@@ -259,11 +276,18 @@ def correct_segment(
             }
             expected = {entry.index for entry in segment}
             if set(parsed) == expected:
+                candidates = payload["glossary_candidates"]
                 cache_path.write_text(
-                    json.dumps({"corrections": parsed}, ensure_ascii=False),
+                    json.dumps(
+                        {
+                            "corrections": parsed,
+                            "glossary_candidates": candidates,
+                        },
+                        ensure_ascii=False,
+                    ),
                     encoding="utf-8",
                 )
-                return parsed, frame, False, 0.0
+                return parsed, candidates, frame, False, 0.0
             last_err = f"只解析到 {len(parsed)} / {len(segment)} 条"
         except (ProviderError, KeyError, TypeError, ValueError) as e:
             last_err = str(e)[:200]
@@ -272,7 +296,7 @@ def correct_segment(
         f"  [seg {segment[0].index}-{segment[-1].index}] 失败: {last_err}",
         file=sys.stderr,
     )
-    return {}, frame, False, 0.0
+    return {}, [], frame, False, 0.0
 
 
 def main():
@@ -286,6 +310,10 @@ def main():
     ap.add_argument("--model", default="")
     ap.add_argument("--env-file", type=Path, default=Path(".env"))
     ap.add_argument("--frame-manifest", type=Path)
+    ap.add_argument("--domain", help="覆盖自动识别的词典领域")
+    ap.add_argument("--glossary-root", type=Path, default=DEFAULT_USER_ROOT)
+    ap.add_argument("--glossary-audit", type=Path)
+    ap.add_argument("--no-glossary-update", action="store_true")
     ap.add_argument("--cache", default=None)
     ap.add_argument("--limit", type=int, default=0, help="只处理前 N 段（调试用）")
     ap.add_argument("--parallel", type=int, default=1, help="并行段数")
@@ -304,12 +332,23 @@ def main():
     cache_dir = Path(args.cache) if args.cache else srt_path.with_suffix(".llm_cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    domains = ["general"]
+    if args.domain and args.domain != "general":
+        domains.append(args.domain)
+    elif not args.domain:
+        domains = detect_domains(args.context)
+    correction_context = args.context + "\n" + build_glossary_prompt(
+        args.context, domains, args.glossary_root
+    )
+
     segments = group_into_segments(entries, args.segment_seconds)
     if args.limit > 0:
         segments = segments[: args.limit]
     print(f"总条目：{len(entries)}，分段：{len(segments)}，Provider：{args.provider}，模型：{model or 'default'}")
 
     index_to_text: dict[int, str] = {e.index: e.text for e in entries}
+    raw_text: dict[int, str] = dict(index_to_text)
+    glossary_candidates: list[dict] = []
     cached = changed = 0
     total_cost = 0.0
     lock = Lock()
@@ -317,10 +356,10 @@ def main():
 
     def worker(seg):
         t0 = time.time()
-        corrections, frame, was_cached, cost = correct_segment(
-            seg, frames_dir, args.context, cache_dir, provider, manifest
+        corrections, candidates, frame, was_cached, cost = correct_segment(
+            seg, frames_dir, correction_context, cache_dir, provider, manifest
         )
-        return seg, corrections, frame, was_cached, cost, time.time() - t0
+        return seg, corrections, candidates, frame, was_cached, cost, time.time() - t0
 
     ex = ThreadPoolExecutor(max_workers=max(1, args.parallel))
     if args.parallel <= 1:
@@ -329,7 +368,7 @@ def main():
         futures = [ex.submit(worker, seg) for seg in segments]
         iterator = (f.result() for f in as_completed(futures))
 
-    for seg, corrections, frame, was_cached, cost, elapsed in iterator:
+    for seg, corrections, candidates, frame, was_cached, cost, elapsed in iterator:
         with lock:
             done += 1
             i = done
@@ -340,6 +379,7 @@ def main():
             if was_cached:
                 cached += 1
             total_cost += cost
+            glossary_candidates.extend(candidates)
         print(
             f"  [{i:3d}/{len(segments)}] idx {seg[0].index}-{seg[-1].index} "
             f"({len(seg)} entries, frame={frame.name if frame else '-'}) "
@@ -355,6 +395,20 @@ def main():
     Path(args.out).write_text(
         "\n\n".join(e.to_block() for e in out_entries) + "\n", encoding="utf-8"
     )
+    if not args.no_glossary_update:
+        audit_path = args.glossary_audit or Path(args.out).with_name("glossary_update.json")
+        audit = update_glossary(
+            raw_text,
+            index_to_text,
+            glossary_candidates,
+            args.domain or domains[-1],
+            args.glossary_root,
+            audit_path,
+        )
+        print(
+            f"词典更新：新增 {len(audit['added'])}，冲突 {len(audit['conflicts'])}，"
+            f"拒绝 {len(audit['rejected'])}；审计 {audit_path}"
+        )
     print(f"\n输出：{args.out}")
     print(f"缓存命中：{cached}/{len(segments)}；文本变化条目：{changed}；总成本 ${total_cost:.2f}")
     return 0

@@ -15,14 +15,16 @@ Whisper SRT 修正（数据驱动版）
   5. 需要语义级修正时，再跑 `llm_correct_srt.py`
 
 用法:
-    python3 correct_srt.py input.srt [-o output.srt] [-g glossary.json] [--stats]
-    python3 correct_srt.py audio.srt -g glossary_nju_os.json --stats
+    python3 correct_srt.py input.srt [-o output.srt] [--context CONTEXT] [--stats]
+    python3 correct_srt.py audio.srt --domain nju-os --stats
 """
 
 import argparse
 import json
 import re
 from pathlib import Path
+
+from glossary import DEFAULT_USER_ROOT, detect_domains, replacements
 
 
 def parse_srt(content: str) -> list[dict]:
@@ -72,13 +74,22 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("input", help="输入 SRT")
     p.add_argument("-o", "--output", help="输出 SRT (默认覆盖输入)")
-    p.add_argument("-g", "--glossary", help="JSON 词表", required=True)
+    p.add_argument("-g", "--glossary", help="兼容旧版的单个 JSON 词表")
+    p.add_argument("--domain", action="append", help="词典领域；可重复指定")
+    p.add_argument("--context", default="", help="用于自动识别领域")
+    p.add_argument("--glossary-root", type=Path, default=DEFAULT_USER_ROOT)
     p.add_argument("--stats", action="store_true", help="打印替换统计")
     args = p.parse_args()
 
     inp = Path(args.input)
     out = Path(args.output) if args.output else inp
-    glossary = json.loads(Path(args.glossary).read_text(encoding="utf-8"))
+    if args.glossary:
+        glossary = json.loads(Path(args.glossary).read_text(encoding="utf-8"))
+    else:
+        domains = args.domain or detect_domains(args.context)
+        if "general" not in domains:
+            domains.insert(0, "general")
+        glossary = replacements(domains, args.glossary_root)
 
     content = inp.read_text(encoding="utf-8")
     entries = parse_srt(content)

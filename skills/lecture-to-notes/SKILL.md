@@ -176,12 +176,16 @@ for helper in \
   "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/check_srt_health.py" \
   "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/clean_subs.py" \
   "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/correct_srt.py" \
+  "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/glossary.py" \
   "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/llm_correct_srt.py" \
+  "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/llm_provider.py" \
   "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/verify_figures.py" \
   "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/prepare_cover.sh" \
   "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/notes-template.tex" \
   "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/whisper_prompts/nju_os.txt" \
-  "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/whisper_prompts/glossary_nju_os.json"; do
+  "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/whisper_prompts/glossary_nju_os.json" \
+  "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/glossaries/general.json" \
+  "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/glossaries/nju-os.json"; do
   test -e "$helper" || { echo "Missing installed helper: $helper" >&2; exit 1; }
 done
 ```
@@ -321,7 +325,7 @@ working example. This dramatically reduces same-sound errors like
 ```bash
 # Stage A — fast dictionary-level fix (wrong → right pairs)
 python3 "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/correct_srt.py" audio.srt \
-    -g "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/whisper_prompts/glossary_nju_os.json" --stats
+    --context "视频领域与讲者信息" --stats
 
 # Stage B — slow LLM + multimodal fix (configurable Kimi CLI or OpenAI)
 python3 "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/llm_correct_srt.py" \
@@ -332,6 +336,9 @@ Stage A is essentially free and catches 80% of wrong characters. Stage B is expe
 (one provider call per ~90s of audio) and only worth running for notes you plan to publish.
 For OpenAI, use `--provider openai --model <model> --env-file .env`; credentials are
 read only from `OPENAI_API_KEY`, with optional `OPENAI_BASE_URL`.
+Every successful run validates glossary candidates against raw/corrected SRT indices,
+updates `~/.video-to-notes/glossaries`, and writes `glossary_update.json`. Use
+`--domain nju-os` only when that optional seed is relevant.
 
 **Stage 4 — Visual-only mode** (when audio quality is unusable):
 Skip subtitles. Use dense frame sampling (fps=1) and rely entirely on visual content.
@@ -597,6 +604,8 @@ the user a PDF that fails this gate.
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/check_srt_health.py`: Structural health gate for downloaded X/Twitter SRT tracks
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/clean_subs.py`: YouTube auto-subtitle deduplication
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/correct_srt.py`: Whisper SRT dictionary-level fix (fast, data-driven)
+- `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/glossary.py`: evidence validation, domain merging, locking, and audited glossary updates
+- `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/glossaries/`: general and optional domain seed dictionaries
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/llm_correct_srt.py`: Whisper SRT LLM + multimodal segment-level fix (Kimi CLI or OpenAI)
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/verify_figures.py`: Three-way figure verification (timestamp × subtitle × frame)
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/prepare_cover.sh`: Cover image format conversion (webp/png → jpg)
