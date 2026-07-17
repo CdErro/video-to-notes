@@ -40,6 +40,18 @@ class DotenvTests(unittest.TestCase):
 
 class KimiProviderTests(unittest.TestCase):
     @mock.patch("llm_provider.subprocess.run")
+    def test_ignores_trailing_stream_metadata_after_valid_assistant_json(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            [], 0,
+            '{"role":"assistant","content":"{\\"answer\\":\\"ok\\"}"}\n'
+            '{"role":"meta","type":"session.resume_hint","session_id":"secret"}\n',
+            "",
+        )
+        provider = llm_provider.KimiCLIProvider(timeout=1)
+        result = provider.correct("prompt", None, SCHEMA)
+        self.assertEqual("ok", result["answer"])
+
+    @mock.patch("llm_provider.subprocess.run")
     def test_parses_final_json_from_stream_json(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[],
@@ -62,6 +74,21 @@ class KimiProviderTests(unittest.TestCase):
         self.assertEqual("kimi", command[0])
         self.assertIn("stream-json", command)
         self.assertIn("kimi-model", command)
+
+    @mock.patch("llm_provider.subprocess.run")
+    def test_generate_passes_multiple_local_images(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=json.dumps({"result": '{"answer":"ok"}'}) + "\n", stderr=""
+        )
+        images = [Path("one.jpg"), Path("two.jpg")]
+
+        result = llm_provider.KimiCLIProvider().generate("prompt", images, SCHEMA)
+
+        self.assertEqual("ok", result["answer"])
+        prompt = run.call_args.args[0][2]
+        self.assertIn(str(images[0].resolve()), prompt)
+        self.assertIn(str(images[1].resolve()), prompt)
 
     @mock.patch("llm_provider.subprocess.run")
     def test_rejects_invalid_structure(self, run):
@@ -132,6 +159,23 @@ class OpenAIProviderTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"OPNEAI_API_KEY": "typo"}, clear=True):
             with self.assertRaisesRegex(llm_provider.ProviderError, "OPNEAI_API_KEY is a typo"):
                 llm_provider.OpenAIProvider("test-model", Path("missing.env"))
+
+    def test_generate_sends_multiple_images(self):
+        response_create = mock.Mock(return_value=types.SimpleNamespace(output_text='{"answer":"ok"}'))
+        client = types.SimpleNamespace(responses=types.SimpleNamespace(create=response_create))
+        fake_module = types.SimpleNamespace(OpenAI=mock.Mock(return_value=client))
+        with tempfile.TemporaryDirectory() as directory:
+            first, second = Path(directory) / "one.jpg", Path(directory) / "two.png"
+            first.write_bytes(b"jpg")
+            second.write_bytes(b"png")
+            with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.dict(
+                sys.modules, {"openai": fake_module}
+            ):
+                provider = llm_provider.OpenAIProvider("model")
+                provider.generate("prompt", [first, second], SCHEMA)
+
+        content = response_create.call_args.kwargs["input"][0]["content"]
+        self.assertEqual(3, len(content))
 
 
 if __name__ == "__main__":

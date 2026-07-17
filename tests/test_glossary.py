@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from threading import Thread
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,27 @@ import glossary
 
 
 class GlossaryTests(unittest.TestCase):
+    def test_atomic_write_retries_transient_windows_permission_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "audit.json"
+            real_replace = glossary.os.replace
+            attempts = 0
+
+            def transient(source, destination):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise PermissionError("temporarily locked")
+                return real_replace(source, destination)
+
+            with mock.patch("glossary.os.replace", side_effect=transient), mock.patch(
+                "glossary.time.sleep"
+            ):
+                glossary._atomic_json(target, {"ok": True})
+
+            self.assertEqual({"ok": True}, json.loads(target.read_text(encoding="utf-8")))
+            self.assertEqual(2, attempts)
+
     def test_detects_nju_os_but_always_keeps_general(self):
         self.assertEqual(["general"], glossary.detect_domains("烹饪入门"))
         self.assertEqual(

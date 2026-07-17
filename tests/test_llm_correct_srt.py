@@ -49,6 +49,18 @@ class FrameSelectionTests(unittest.TestCase):
 
         self.assertEqual("ch2_002.png", selected.name)
 
+    def test_manifest_selects_jpeg_evidence_frames(self):
+        with tempfile.TemporaryDirectory() as directory:
+            frames = Path(directory)
+            (frames / "frame_0001.jpg").touch()
+            (frames / "frame_0002.jpg").touch()
+
+            selected = llm_correct_srt.pick_frame(
+                frames, 14, {"frame_0001.jpg": 0, "frame_0002.jpg": 15}
+            )
+
+        self.assertEqual("frame_0002.jpg", selected.name)
+
 
 class CorrectionTests(unittest.TestCase):
     def test_retries_invalid_output_then_accepts_complete_segment(self):

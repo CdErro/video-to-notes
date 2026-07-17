@@ -44,7 +44,7 @@ def extract_sample_frames(
     frames_dir = output_dir / "evidence" / "frames"
     records: list[dict] = []
     timestamp = 0.0
-    while timestamp < duration:
+    while timestamp < duration and duration - timestamp >= 0.1:
         name = f"frame_{len(records) + 1:04d}.jpg"
         _run_ffmpeg(video, timestamp, frames_dir / name, executable)
         records.append({"frame": name, "timestamp": round(timestamp, 3)})
@@ -91,6 +91,43 @@ def materialize_figures(
         encoding="utf-8",
     )
     return records
+
+
+def create_contact_sheets(
+    output_dir: Path, records: list[dict], tiles_per_sheet: int = 16
+) -> list[Path]:
+    if tiles_per_sheet < 1:
+        raise ValueError("tiles_per_sheet must be positive")
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError as error:
+        raise EvidenceError("Pillow is required to create contact sheets") from error
+    frames_dir = output_dir / "evidence" / "frames"
+    contact_dir = output_dir / "evidence" / "contact_sheets"
+    contact_dir.mkdir(parents=True, exist_ok=True)
+    created: list[Path] = []
+    tile_width, tile_height, label_height = 320, 180, 24
+    columns = 4
+    for offset in range(0, len(records), tiles_per_sheet):
+        group = records[offset : offset + tiles_per_sheet]
+        rows = (len(group) + columns - 1) // columns
+        canvas = Image.new("RGB", (columns * tile_width, rows * (tile_height + label_height)), "black")
+        draw = ImageDraw.Draw(canvas)
+        for position, record in enumerate(group):
+            source = frames_dir / record["frame"]
+            if not source.is_file():
+                raise EvidenceError(f"Evidence frame is missing: {source}")
+            with Image.open(source) as image:
+                image = image.convert("RGB")
+                image.thumbnail((tile_width, tile_height))
+                x = (position % columns) * tile_width
+                y = (position // columns) * (tile_height + label_height)
+                canvas.paste(image, (x, y))
+                draw.text((x + 4, y + tile_height + 4), f"{record['timestamp']:.1f}s", fill="white")
+        target = contact_dir / f"contact_{len(created) + 1:03d}.jpg"
+        canvas.save(target, quality=88)
+        created.append(target)
+    return created
 
 
 def main() -> int:

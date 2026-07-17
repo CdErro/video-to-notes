@@ -71,6 +71,35 @@ class MediaEvidenceTests(unittest.TestCase):
         self.assertEqual([], records)
         self.assertEqual([], saved["figures"])
 
+    def test_contact_sheets_are_separate_analysis_artifacts(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "run"
+            frames = root / "evidence/frames"
+            frames.mkdir(parents=True)
+            Image.new("RGB", (640, 360), "red").save(frames / "frame_0001.jpg")
+            sheets = media_evidence.create_contact_sheets(
+                root, [{"frame": "frame_0001.jpg", "timestamp": 15.0}]
+            )
+
+        self.assertEqual("contact_001.jpg", sheets[0].name)
+        self.assertIn("contact_sheets", sheets[0].parts)
+
+    @mock.patch("media_evidence.subprocess.run")
+    def test_sample_frames_do_not_request_float_rounding_at_eof(self, run):
+        def create_frame(command, **_kwargs):
+            Path(command[-1]).touch()
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        run.side_effect = create_frame
+        with tempfile.TemporaryDirectory() as directory:
+            records = media_evidence.extract_sample_frames(
+                Path(directory) / "video.mp4", Path(directory) / "run",
+                464.864, 29.054, "ffmpeg",
+            )
+        self.assertLess(records[-1]["timestamp"], 464.764)
+
 
 if __name__ == "__main__":
     unittest.main()
