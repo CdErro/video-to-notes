@@ -11,7 +11,8 @@ workflow only for compatibility; use this skill for new work.
 ## Resolve the repository
 
 This repository-backed skill calls helpers under `<repo>/scripts`. Resolve `<repo>` as
-the directory two levels above this loaded `SKILL.md`. Use absolute paths in commands.
+the nearest ancestor of this loaded `SKILL.md` that contains `scripts/`, `skills/`, and
+`tests/` (normally three levels above the file). Use absolute paths in commands.
 Read [quality-rules.md](references/quality-rules.md) before drafting notes.
 
 ## 1. Check the environment

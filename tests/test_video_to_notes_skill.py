@@ -26,6 +26,12 @@ class VideoToNotesSkillTests(unittest.TestCase):
         for signal in ("formula", "code", "table", "figure"):
             self.assertIn(signal, self.skill)
 
+    def test_repository_root_resolution_names_required_directories(self):
+        self.assertIn("nearest ancestor", self.skill)
+        for directory in ("`scripts/`", "`skills/`", "`tests/`"):
+            self.assertIn(directory, self.skill)
+        self.assertNotIn("two levels above", self.skill)
+
     def test_legacy_entry_points_to_current_skill(self):
         self.assertIn("use the `video-to-notes` skill for new requests", self.legacy)
 
