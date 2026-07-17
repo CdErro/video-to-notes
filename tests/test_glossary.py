@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from threading import Thread
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,48 @@ class GlossaryTests(unittest.TestCase):
             )
 
         self.assertEqual([], second["added"])
+
+    def test_rejects_unsafe_domain_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for domain in ("", "../evil", "a/b"):
+                with self.subTest(domain=domain), self.assertRaises(ValueError):
+                    glossary.update_glossary({}, {}, [], domain, Path(directory))
+
+    def test_unchanged_evidence_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audit = glossary.update_glossary(
+                {1: "派散 和 Python"},
+                {1: "派散 和 Python"},
+                [{"original": "派散", "corrected": "Python", "indices": [1]}],
+                "general",
+                Path(directory),
+            )
+
+        self.assertEqual([], audit["added"])
+        self.assertEqual("evidence_mismatch", audit["rejected"][0]["reason"])
+
+    def test_second_lock_times_out_without_deleting_active_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            observed = []
+            with glossary.glossary_lock(root):
+                worker = Thread(
+                    target=lambda: self._capture_lock_timeout(root, observed)
+                )
+                worker.start()
+                worker.join()
+
+            self.assertEqual(["timeout"], observed)
+            with glossary.glossary_lock(root, timeout=0.1):
+                pass
+
+    @staticmethod
+    def _capture_lock_timeout(root, observed):
+        try:
+            with glossary.glossary_lock(root, timeout=0.1):
+                observed.append("acquired")
+        except TimeoutError:
+            observed.append("timeout")
 
 
 if __name__ == "__main__":

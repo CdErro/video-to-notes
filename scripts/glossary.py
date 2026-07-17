@@ -36,6 +36,12 @@ def normalize_term(value: str) -> str:
     return unicodedata.normalize("NFKC", value).strip().casefold()
 
 
+def validate_domain(domain: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", domain or ""):
+        raise ValueError(f"Invalid glossary domain: {domain!r}")
+    return domain
+
+
 def detect_domains(context: str) -> list[str]:
     normalized = normalize_term(context)
     selected = [
@@ -59,6 +65,7 @@ def load_entries(domains: list[str], user_root: Path = DEFAULT_USER_ROOT) -> dic
     merged: dict[str, dict] = {}
     normalized: dict[str, str] = {}
     for domain in domains:
+        validate_domain(domain)
         for path in (SEED_ROOT / f"{domain}.json", user_root / f"{domain}.json"):
             for original, entry in _read_glossary(path, domain)["entries"].items():
                 key = normalize_term(original)
@@ -99,24 +106,42 @@ def parse_srt_text(path: Path) -> dict[int, str]:
 def glossary_lock(root: Path, timeout: float = 10.0):
     root.mkdir(parents=True, exist_ok=True)
     path = root / ".update.lock"
+    handle = path.open("a+b")
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"0")
+        handle.flush()
     deadline = time.monotonic() + timeout
     while True:
         try:
-            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(descriptor, str(os.getpid()).encode())
-            os.close(descriptor)
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
-        except FileExistsError:
-            if path.exists() and time.time() - path.stat().st_mtime > 300:
-                path.unlink(missing_ok=True)
-                continue
+        except (BlockingIOError, OSError):
             if time.monotonic() >= deadline:
+                handle.close()
                 raise TimeoutError(f"Glossary is locked: {path}")
             time.sleep(0.05)
     try:
         yield
     finally:
-        path.unlink(missing_ok=True)
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -142,6 +167,7 @@ def update_glossary(
     user_root: Path = DEFAULT_USER_ROOT,
     audit_path: Path | None = None,
 ) -> dict:
+    validate_domain(domain)
     audit = {
         "schema_version": 1,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -164,7 +190,13 @@ def update_glossary(
                 reason = "empty_or_unchanged"
             elif not isinstance(indices, list) or not indices or not all(type(index) is int for index in indices):
                 reason = "invalid_indices"
-            elif not all(original in raw.get(index, "") and replacement in corrected.get(index, "") for index in indices):
+            elif not all(
+                original in raw.get(index, "")
+                and replacement in corrected.get(index, "")
+                and raw.get(index) != corrected.get(index)
+                and corrected.get(index, "").count(original) < raw.get(index, "").count(original)
+                for index in indices
+            ):
                 reason = "evidence_mismatch"
             key = normalize_term(original)
             current = by_normalized.get(key)
@@ -180,12 +212,26 @@ def update_glossary(
                 continue
             entry = {
                 "replacement": replacement,
-                "evidence": [{"srt_index": index} for index in indices],
+                "evidence": [
+                    {
+                        "srt_index": index,
+                        "raw_text": raw[index],
+                        "corrected_text": corrected[index],
+                    }
+                    for index in indices
+                ],
                 "updated_at": audit["timestamp"],
             }
             user_data["entries"][original] = entry
             by_normalized[key] = entry
-            audit["added"].append({"original": original, "corrected": replacement, "indices": indices})
+            audit["added"].append(
+                {
+                    "original": original,
+                    "corrected": replacement,
+                    "indices": indices,
+                    "evidence": entry["evidence"],
+                }
+            )
         _atomic_json(user_path, user_data)
         _atomic_json(audit_path or user_root / "glossary_update.json", audit)
     return audit
