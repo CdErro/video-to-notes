@@ -20,7 +20,6 @@ from check_srt_health import assess_srt
 from correct_srt import apply_glossary, dump_srt, parse_srt as parse_basic_srt
 from environment import CONFIG_PATH, doctor, load_tool_overrides
 from glossary import DEFAULT_USER_ROOT, build_prompt, detect_domains, replacements
-from llm_correct_srt import parse_srt
 from llm_provider import Provider, ProviderError, create_provider, load_dotenv
 from media_evidence import EvidenceError, create_contact_sheets, extract_sample_frames, materialize_figures
 from render_notes import render
@@ -90,7 +89,14 @@ def atomic_json(path: Path, payload: dict) -> None:
 
 def safe_url(url: str) -> str:
     parsed = urlsplit(url)
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    try:
+        port = f":{parsed.port}" if parsed.port is not None else ""
+    except ValueError:
+        port = ""
+    return urlunsplit((parsed.scheme, host + port, parsed.path, "", ""))
 
 
 def format_timestamp(seconds: float) -> str:
@@ -190,7 +196,7 @@ def semantic_correction(
     env_file: Path,
     domain: str | None,
     timeout: int,
-) -> bool:
+) -> tuple[bool, str | None]:
     command = [
         sys.executable, str(ROOT / "scripts" / "llm_correct_srt.py"),
         "--srt", str(source), "--frames", str(frames_dir), "--frame-manifest",
@@ -203,10 +209,10 @@ def semantic_correction(
         command.extend(["--domain", domain])
     try:
         run_command(command, "Subtitle semantic correction failed")
-        return output.is_file()
-    except PipelineError:
+        return output.is_file(), None
+    except PipelineError as error:
         shutil.copy2(source, output)
-        return False
+        return False, str(error)
 
 
 def build_notes_prompt(transcript: str, context: str, duration: float) -> str:
@@ -235,34 +241,6 @@ def generate_notes_payload(
         except (ProviderError, KeyError, TypeError, ValueError) as error:
             last_error = error
     raise ProviderError(f"Notes generation failed after {attempts} attempts: {last_error}")
-
-
-def fallback_payload(transcript: str, duration: float, title: str) -> dict:
-    entries = parse_srt(transcript)
-    minimum = 2 if duration < 300 else 5 if duration < 1800 else 8
-    if not entries:
-        return {
-            "title": title or "视频画面摘要", "sections": [
-                {"heading": "内容说明", "body": "未检测到可用语音，本次结果仅保留视频画面分析。", "timestamp": 0},
-                {"heading": "使用限制", "body": "由于缺少字幕，无法可靠还原讲解细节，请结合原视频核对。", "timestamp": min(duration, 1)},
-            ], "figures": [{"timestamp": min(duration / 2, max(0, duration - 0.1)), "section": "内容说明", "caption": "视频画面证据"}],
-            "source_signals": ["figure"],
-        }
-    sections = []
-    chunk = max(1, (len(entries) + minimum - 1) // minimum)
-    for index in range(minimum):
-        group = entries[index * chunk : (index + 1) * chunk]
-        if not group:
-            group = [entries[-1]]
-        body = " ".join(item.text for item in group)
-        while sum("\u4e00" <= char <= "\u9fff" for char in body) < (110 if duration >= 1800 else 65):
-            body += " " + body
-        sections.append({"heading": f"内容要点 {index + 1}", "body": body, "timestamp": group[0].start})
-    figures = [
-        {"timestamp": item["timestamp"], "section": item["heading"], "caption": "对应时刻的原视频画面"}
-        for item in sections[: min(3, len(sections))]
-    ]
-    return {"title": title or "视频学习笔记", "sections": sections, "figures": figures, "source_signals": ["figure"] if figures else []}
 
 
 def payload_to_markdown(payload: dict, figures: list[dict]) -> str:
@@ -301,6 +279,12 @@ def provider_model(provider_name: str, requested: str) -> str:
     return "kimi-code/kimi-for-coding" if provider_name == "kimi-cli" else "gpt-5.4-mini"
 
 
+def render_failure(code: int, manifest: dict) -> str | None:
+    if code == 0:
+        return None
+    return "; ".join(manifest.get("degradation_reasons", [])) or f"render exited with {code}"
+
+
 def execute(args: argparse.Namespace) -> Path:
     config_path = args.config
     model = provider_model(args.provider, args.model)
@@ -328,12 +312,30 @@ def execute(args: argparse.Namespace) -> Path:
         state["stages"][name] = {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat(), **details}
         atomic_json(state_path, state)
 
+    def fail(name: str, reason: str) -> None:
+        state["stages"][name] = {
+            "status": "failed",
+            "failed_at": datetime.now(timezone.utc).isoformat(),
+            "reason": reason,
+        }
+        state["degraded"] = True
+        state["degradation_reasons"].append(reason)
+        atomic_json(state_path, state)
+
     def stage_done(name: str, artifact: Path | None = None) -> bool:
         return bool(
             args.resume
             and state["stages"].get(name, {}).get("status") == "completed"
             and (artifact is None or artifact.is_file())
         )
+
+    if (
+        args.resume
+        and stage_done("render")
+        and (output_dir / "notes.md").is_file()
+        and (output_dir / "run_manifest.json").is_file()
+    ):
+        return output_dir
 
     video = Path(state.get("artifacts", {}).get("video", ""))
     captions = [Path(path) for path in state.get("artifacts", {}).get("captions", [])]
@@ -411,57 +413,81 @@ def execute(args: argparse.Namespace) -> Path:
         complete("evidence", frames=len(records), contact_sheets=[str(path.resolve()) for path in contacts])
 
     corrected_srt = output_dir / "corrected.srt"
-    semantic_ok = True
+    semantic_ok, semantic_error = True, None
     if stage_done("subtitle_correction", corrected_srt):
         semantic_ok = not state["stages"]["subtitle_correction"].get("degraded", False)
+        semantic_error = state["stages"]["subtitle_correction"].get("error")
     elif dictionary_srt.stat().st_size:
-        semantic_ok = semantic_correction(dictionary_srt, corrected_srt, output_dir / "evidence" / "frames", output_dir / "evidence" / "frame_manifest.tsv", context, args.provider, model, args.env_file, args.domain, args.provider_timeout)
+        semantic_ok, semantic_error = semantic_correction(
+            dictionary_srt, corrected_srt, output_dir / "evidence" / "frames",
+            output_dir / "evidence" / "frame_manifest.tsv", context, args.provider,
+            model, args.env_file, args.domain, args.provider_timeout,
+        )
     else:
         corrected_srt.write_text("", encoding="utf-8")
     if not semantic_ok and not stage_done("subtitle_correction", corrected_srt):
         state["degraded"] = True
-        state["degradation_reasons"].append("Subtitle semantic correction failed; dictionary output retained")
+        state["degradation_reasons"].append(
+            f"Subtitle semantic correction failed; dictionary output retained: {semantic_error}"
+        )
     if not stage_done("subtitle_correction", corrected_srt):
-        complete("subtitle_correction", degraded=not semantic_ok, output=str(corrected_srt.resolve()))
+        complete(
+            "subtitle_correction", degraded=not semantic_ok, error=semantic_error,
+            output=str(corrected_srt.resolve()),
+        )
 
-    provider = create_provider(args.provider, model, args.env_file, args.provider_timeout)
     transcript_text = corrected_srt.read_text(encoding="utf-8-sig")
-    llm_degraded = False
     state["degradation_reasons"] = [
         reason
         for reason in state["degradation_reasons"]
         if not reason.startswith("LLM notes generation failed")
     ]
     state["degraded"] = bool(state["degradation_reasons"])
-    try:
-        payload = generate_notes_payload(provider, build_notes_prompt(transcript_text, context, metadata["duration"]), contacts)
-    except ProviderError as error:
-        payload = fallback_payload(transcript_text, metadata["duration"], metadata["title"])
-        llm_degraded = True
-        state["degraded"] = True
-        state["degradation_reasons"].append(
-            f"LLM notes generation failed; deterministic transcript fallback used: {error}"
-        )
-    allowed_signals = {"formula", "code", "table", "figure"}
-    payload["source_signals"] = [item for item in payload["source_signals"] if item in allowed_signals]
-    figure_candidates = []
-    for item in payload["figures"][:6]:
-        try:
-            timestamp = float(item["timestamp"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if 0 <= timestamp < metadata["duration"]:
-            figure_candidates.append({**item, "timestamp": timestamp})
-    payload["figures"] = figure_candidates
-    if not figure_candidates:
-        payload["source_signals"] = [item for item in payload["source_signals"] if item != "figure"]
-    figures = materialize_figures(video, output_dir, figure_candidates, ffmpeg)
+    payload_path = output_dir / "notes_payload.json"
     draft = output_dir / "draft.md"
-    draft.write_text(payload_to_markdown(payload, figures), encoding="utf-8")
-    write_teaching_atoms(output_dir, payload, metadata["duration"])
-    complete("notes_generation", degraded=llm_degraded, figures=len(figures))
+    figure_manifest = output_dir / "figure_manifest.json"
+    if stage_done("notes_generation", payload_path) and draft.is_file() and figure_manifest.is_file():
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    else:
+        provider = create_provider(args.provider, model, args.env_file, args.provider_timeout)
+        try:
+            payload = generate_notes_payload(
+                provider,
+                build_notes_prompt(transcript_text, context, metadata["duration"]),
+                contacts,
+            )
+        except ProviderError as error:
+            reason = f"LLM notes generation failed after retries: {error}"
+            atomic_json(output_dir / "notes_failure.json", {"error": reason})
+            fail("notes_generation", reason)
+            raise PipelineError(reason) from error
+        allowed_signals = {"formula", "code", "table", "figure"}
+        payload["source_signals"] = [
+            item for item in payload["source_signals"] if item in allowed_signals
+        ]
+        figure_candidates = []
+        for item in payload["figures"][:6]:
+            try:
+                timestamp = float(item["timestamp"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if 0 <= timestamp < metadata["duration"]:
+                figure_candidates.append({**item, "timestamp": timestamp})
+        payload["figures"] = figure_candidates
+        if not figure_candidates:
+            payload["source_signals"] = [
+                item for item in payload["source_signals"] if item != "figure"
+            ]
+        figures = materialize_figures(video, output_dir, figure_candidates, ffmpeg)
+        draft.write_text(payload_to_markdown(payload, figures), encoding="utf-8")
+        write_teaching_atoms(output_dir, payload, metadata["duration"])
+        atomic_json(payload_path, payload)
+        complete("notes_generation", figures=len(figures), payload=str(payload_path.resolve()))
 
     code, manifest = render(draft, output_dir, args.format, metadata["duration"], metadata["platform"], args.domain or domains[-1], args.provider, set(payload["source_signals"]))
+    if reason := render_failure(code, manifest):
+        fail("render", reason)
+        raise PipelineError(f"Rendering failed: {reason}")
     complete("render", exit_code=code, outputs=manifest["outputs"])
     manifest.update({
         "pipeline_stages": state["stages"], "source": state["source"],
@@ -471,8 +497,6 @@ def execute(args: argparse.Namespace) -> Path:
     manifest["degraded"] = bool(manifest["degraded"] or state["degraded"])
     manifest["degradation_reasons"] = list(dict.fromkeys(manifest["degradation_reasons"] + state["degradation_reasons"]))
     atomic_json(output_dir / "run_manifest.json", manifest)
-    if code == 2:
-        raise PipelineError("Generated notes did not satisfy repository quality rules")
     return output_dir
 
 

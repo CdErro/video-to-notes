@@ -108,7 +108,7 @@ def load_tool_overrides(path: Path = CONFIG_PATH) -> dict[str, str]:
 def required_names(
     output_format: str, provider: str, with_transcription: bool = False
 ) -> set[str]:
-    required = {"Python", "yt-dlp", "FFmpeg", "FFprobe", "yt-dlp CLI"}
+    required = {"Python", "yt-dlp", "Pillow", "FFmpeg", "FFprobe", "yt-dlp CLI"}
     if output_format in {"latex", "pdf", "all"}:
         required.add("Pandoc")
     if output_format in {"pdf", "all"}:

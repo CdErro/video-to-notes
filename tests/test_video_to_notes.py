@@ -47,10 +47,24 @@ class PipelineUnitTests(unittest.TestCase):
         )
         self.assertEqual("custom", video_to_notes.provider_model("kimi-cli", "custom"))
 
+    def test_any_nonzero_render_status_is_a_pipeline_failure(self):
+        self.assertIsNone(video_to_notes.render_failure(0, {}))
+        self.assertEqual(
+            "Pandoc conversion failed",
+            video_to_notes.render_failure(1, {"degradation_reasons": ["Pandoc conversion failed"]}),
+        )
+        self.assertEqual("render exited with 2", video_to_notes.render_failure(2, {}))
+
     def test_query_tokens_are_not_persisted(self):
         self.assertEqual(
             "https://www.xiaohongshu.com/explore/abc",
             video_to_notes.safe_url("https://www.xiaohongshu.com/explore/abc?xsec_token=secret"),
+        )
+
+    def test_url_userinfo_is_not_persisted(self):
+        self.assertEqual(
+            "https://example.test:8443/video",
+            video_to_notes.safe_url("https://user:secret@example.test:8443/video?token=x"),
         )
 
     def test_noninteractive_visual_fallback_requires_explicit_flag(self):
@@ -90,11 +104,10 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertEqual("标题", result["title"])
         self.assertEqual(3, provider.calls)
 
-    def test_fallback_meets_short_markdown_shape(self):
-        payload = video_to_notes.fallback_payload(healthy_srt(), 100, "标题")
-        markdown = video_to_notes.payload_to_markdown(payload, [])
-        self.assertGreaterEqual(markdown.count("## "), 2)
-        self.assertIn("00:00:09", markdown)
+    def test_note_generation_failure_is_not_disguised_as_notes(self):
+        provider = FakeProvider([ProviderError("bad")] * 3)
+        with self.assertRaisesRegex(ProviderError, "after 3 attempts"):
+            video_to_notes.generate_notes_payload(provider, "prompt", [])
 
 
 class PipelineIntegrationTests(unittest.TestCase):
@@ -158,7 +171,9 @@ class PipelineIntegrationTests(unittest.TestCase):
                 patched["extract_sample_frames"].side_effect = samples
                 contact = output / "evidence/contact_sheets/contact_001.jpg"
                 patched["create_contact_sheets"].return_value = [contact]
-                patched["semantic_correction"].side_effect = lambda src, out, *_args: (out.write_bytes(src.read_bytes()) or True)
+                patched["semantic_correction"].side_effect = lambda src, out, *_args: (
+                    (out.write_bytes(src.read_bytes()) or True), None
+                )
                 patched["generate_notes_payload"].return_value = payload
                 patched["materialize_figures"].side_effect = figures
                 patched["render"].return_value = (0, manifest)
