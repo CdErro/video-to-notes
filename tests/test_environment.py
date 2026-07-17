@@ -60,6 +60,13 @@ class EnvironmentDoctorTests(unittest.TestCase):
         self.assertEqual("set", result.detail)
         self.assertNotIn("secret-value", str(result))
 
+    @mock.patch("environment.importlib.metadata.version", return_value="2.43.0")
+    @mock.patch("environment.importlib.util.find_spec", return_value=object())
+    def test_unsupported_python_package_version_is_reported(self, _spec, _version):
+        openai = next(item for item in environment.check_python({"openai"}) if item.name == "openai")
+
+        self.assertEqual("version_unsupported", openai.status)
+
 
 class EnvironmentInstallTests(unittest.TestCase):
     @mock.patch("environment.target_python")
@@ -78,6 +85,35 @@ class EnvironmentInstallTests(unittest.TestCase):
 
         self.assertEqual("conda", commands[0][0])
         self.assertIn(str(environment.REQUIREMENTS_PATH), commands[0])
+
+    @mock.patch("environment.target_python")
+    def test_optional_python_package_is_not_installed(self, target_python):
+        target_python.return_value = (["python"], [])
+        missing = [
+            environment.CheckResult(
+                "Torch", "python_package", "optional_missing", False, "missing"
+            )
+        ]
+
+        self.assertEqual([], environment.installation_commands(missing, "venv:.venv"))
+
+    @mock.patch("environment.shutil.which", return_value=None)
+    def test_missing_package_manager_returns_manual_guidance(self, _which):
+        missing = [
+            environment.CheckResult(
+                "FFmpeg", "command", "required_missing", True, "not found"
+            )
+        ]
+
+        guidance = environment.manual_install_guidance(missing)
+
+        self.assertEqual(1, len(guidance))
+        self.assertIn("ffmpeg.org", guidance[0])
+
+    def test_windows_setup_falls_back_to_venv(self):
+        setup = (environment.ROOT / "setup.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('$Target = "venv:.venv"', setup)
 
     def test_json_report_is_machine_readable(self):
         result = environment.CheckResult("Python", "runtime", "ready", True, "3.13")

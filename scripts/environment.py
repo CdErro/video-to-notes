@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import importlib.util
 import json
 import os
@@ -37,11 +38,17 @@ class CheckResult:
 
 
 PYTHON_PACKAGES = {
-    "openai": "openai",
-    "yt-dlp": "yt_dlp",
-    "Whisper": "whisper",
-    "Torch": "torch",
-    "Pillow": "PIL",
+    "openai": ("openai", "openai", (2, 44, 0)),
+    "yt-dlp": ("yt_dlp", "yt-dlp", (2026, 6, 9)),
+    "Whisper": ("whisper", "openai-whisper", None),
+    "Torch": ("torch", "torch", None),
+    "Pillow": ("PIL", "Pillow", None),
+}
+
+COMMAND_MINIMUMS = {
+    "FFmpeg": (4, 0),
+    "FFprobe": (4, 0),
+    "Kimi Code CLI": (0, 26, 0),
 }
 
 COMMANDS = {
@@ -74,6 +81,18 @@ LINUX_PACKAGES = {
     "Pandoc": ["sudo", "apt", "install", "-y", "pandoc"],
     "XeLaTeX": ["sudo", "apt", "install", "-y", "texlive-xetex", "texlive-lang-chinese"],
 }
+
+MANUAL_INSTALL_GUIDANCE = {
+    "FFmpeg": "Install FFmpeg and ffprobe from https://ffmpeg.org/download.html",
+    "ImageMagick": "Install ImageMagick from https://imagemagick.org/script/download.php",
+    "Pandoc": "Install Pandoc from https://pandoc.org/installing.html",
+    "XeLaTeX": "Install a TeX distribution that includes XeLaTeX and Chinese fonts.",
+}
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    match = __import__("re").search(r"\d+(?:\.\d+)+", value)
+    return tuple(int(part) for part in match.group().split(".")) if match else ()
 
 
 def load_tool_overrides(path: Path = CONFIG_PATH) -> dict[str, str]:
@@ -113,16 +132,26 @@ def check_python(required: set[str]) -> list[CheckResult]:
             sys.executable,
         )
     ]
-    for display_name, import_name in PYTHON_PACKAGES.items():
+    for display_name, (import_name, distribution, minimum) in PYTHON_PACKAGES.items():
         found = importlib.util.find_spec(import_name) is not None
         is_required = display_name in required
+        detail = f"import {import_name}"
+        status = "ready" if found else ("required_missing" if is_required else "optional_missing")
+        if found:
+            try:
+                version = importlib.metadata.version(distribution)
+                detail = version
+                if minimum and _version_tuple(version) < minimum:
+                    status = "version_unsupported"
+            except importlib.metadata.PackageNotFoundError:
+                pass
         results.append(
             CheckResult(
                 display_name,
                 "python_package",
-                "ready" if found else ("required_missing" if is_required else "optional_missing"),
+                status,
                 is_required,
-                f"import {import_name}",
+                detail,
             )
         )
     return results
@@ -155,6 +184,9 @@ def check_commands(required: set[str], overrides: dict[str, str]) -> list[CheckR
             output = (completed.stdout or completed.stderr).splitlines()
             detail = output[0].strip() if output else f"exit {completed.returncode}"
             status = "ready" if completed.returncode == 0 else "found_unusable"
+            minimum = COMMAND_MINIMUMS.get(display_name)
+            if status == "ready" and minimum and _version_tuple(detail) < minimum:
+                status = "version_unsupported"
         except (OSError, subprocess.SubprocessError) as error:
             status = "found_unusable"
             detail = str(error)
@@ -210,15 +242,38 @@ def target_python(target: str) -> tuple[list[str], list[list[str]]]:
 def installation_commands(results: list[CheckResult], target: str) -> list[list[str]]:
     python_command, commands = target_python(target)
     missing_python = any(
-        item.kind == "python_package" and item.status != "ready" for item in results
+        item.kind == "python_package" and item.required and item.status != "ready"
+        for item in results
     )
     if missing_python:
         commands.append(python_command + ["-m", "pip", "install", "-r", str(REQUIREMENTS_PATH)])
     package_map = WINDOWS_PACKAGES if os.name == "nt" else MACOS_PACKAGES if sys.platform == "darwin" else LINUX_PACKAGES
+    manager = "winget" if os.name == "nt" else "brew" if sys.platform == "darwin" else "apt"
+    manager_available = shutil.which(manager) is not None
     for item in results:
-        if item.kind == "command" and item.required and item.status != "ready" and item.name in package_map:
+        if (
+            manager_available
+            and item.kind == "command"
+            and item.required
+            and item.status != "ready"
+            and item.name in package_map
+        ):
             commands.append(package_map[item.name])
     return commands
+
+
+def manual_install_guidance(results: list[CheckResult]) -> list[str]:
+    manager = "winget" if os.name == "nt" else "brew" if sys.platform == "darwin" else "apt"
+    if shutil.which(manager):
+        return []
+    return [
+        MANUAL_INSTALL_GUIDANCE[item.name]
+        for item in results
+        if item.kind == "command"
+        and item.required
+        and item.status != "ready"
+        and item.name in MANUAL_INSTALL_GUIDANCE
+    ]
 
 
 def run_install(commands: list[list[str]], assume_yes: bool) -> int:
@@ -266,6 +321,11 @@ def main() -> int:
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"Cannot prepare installation: {error}", file=sys.stderr)
         return 2
+    guidance = manual_install_guidance(results)
+    if guidance:
+        print("No supported system package manager was found. Install manually:")
+        for item in guidance:
+            print(f"  - {item}")
     return run_install(commands, args.yes)
 
 
