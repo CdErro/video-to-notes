@@ -1,9 +1,10 @@
-# lecture-to-notes
+# video-to-notes
 
 AI 驱动的视频讲义与论文解读工具集合，Fork 自
 [`ysyecust/lecture-to-notes`](https://github.com/ysyecust/lecture-to-notes)。
 
-- `lecture-to-notes`：将 YouTube、Bilibili、X/Twitter 和小红书视频转换为中文讲义。
+- `video-to-notes`：将 YouTube、Bilibili、X/Twitter 和小红书视频转换为中文 Markdown 笔记，并可选生成 LaTeX/PDF。
+- `lecture-to-notes`：保留原有 LaTeX 优先流程的兼容入口。
 - `paper-to-html`：将学术论文转换为结构化中文 HTML 解读。
 
 本 Fork 的 `main` 分支只同步上游，实际定制开发位于默认分支 `tool-only`。
@@ -12,6 +13,7 @@ AI 驱动的视频讲义与论文解读工具集合，Fork 自
 
 ```text
 scripts/                  视频、字幕、帧与校验辅助脚本
+skills/video-to-notes/    通用视频转中文笔记 Skill
 skills/lecture-to-notes/  视频转讲义 Skill
 skills/paper-to-html/     论文转 HTML Skill
 tests/                    unittest 测试
@@ -58,6 +60,18 @@ conda run -n vid2rich python scripts/llm_correct_srt.py `
 输出目录生成 `glossary_update.json`。可用 `--domain <name>` 覆盖自动识别；用户
 词典保存在 `~/.video-to-notes/glossaries/`，冲突只记录、不覆盖。
 
+始终生成 Markdown，并按需转换：
+
+```powershell
+conda run -n vid2rich python scripts/render_notes.py draft.md `
+  --output-dir runs/demo --duration 600 --platform bilibili `
+  --domain general --provider kimi-cli --format all
+```
+
+`<5`、`5–30`、`≥30` 分钟视频采用不同的最低质量规则。公式、代码、表格和
+配图只在源视频确实包含对应内容时要求；每次运行生成 `run_manifest.json`，记录
+环境、平台、领域、Provider、输出与降级原因。
+
 运行测试：
 
 ```powershell
@@ -72,7 +86,7 @@ conda run -n vid2rich python -m unittest discover -s tests -v
 - Python 3
 - `yt-dlp`
 - `ffmpeg`
-- ImageMagick
+- Pandoc（生成 LaTeX/PDF 时）
 - Whisper（无可用字幕时）
 - XeLaTeX（生成 PDF 时）
 
