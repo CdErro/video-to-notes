@@ -25,6 +25,9 @@ class DetectPlatformTests(unittest.TestCase):
             "https://x.com/person/status/2075594420163092606": "x",
             "https://x.com/person/status/2075594420163092606/video/1": "x",
             "https://mobile.twitter.com/person/status/2075594420163092606?x=1#fragment": "x",
+            "https://xhslink.com/aBcD": "xiaohongshu",
+            "https://www.xiaohongshu.com/explore/64a1bc2d": "xiaohongshu",
+            "https://www.xiaohongshu.com/discovery/item/64A1bc2D": "xiaohongshu",
         }
 
         for url, expected in cases.items():
@@ -48,6 +51,8 @@ class DetectPlatformTests(unittest.TestCase):
             "https://x.com:bad/person/status/123",
             "https://x.com/person/status/１２３",
             "https://x.com/person/status/123/video/١",
+            "https://xhslink.com/",
+            "https://www.xiaohongshu.com/user/profile/123",
         )
 
         for url in cases:
@@ -204,3 +209,64 @@ class ProbeTests(unittest.TestCase):
     def test_probe_reports_missing_ytdlp(self, run):
         with self.assertRaisesRegex(video_source.ProbeError, "yt-dlp"):
             video_source.probe_source(self.URL)
+
+
+class XiaohongshuTests(unittest.TestCase):
+    SHORT_URL = "https://xhslink.com/AbCd"
+    CANONICAL_URL = "https://www.xiaohongshu.com/explore/64a1bc2d"
+
+    @mock.patch("video_source._redirect_location")
+    def test_short_link_resolves_only_to_official_video_page(self, redirect):
+        redirect.return_value = self.CANONICAL_URL + "?xsec_token=secret#comment"
+
+        self.assertEqual(
+            video_source.resolve_xiaohongshu_url(self.SHORT_URL),
+            self.CANONICAL_URL,
+        )
+
+    @mock.patch("video_source._redirect_location")
+    def test_short_link_rejects_external_redirect(self, redirect):
+        redirect.return_value = "https://example.com/steal"
+
+        with self.assertRaisesRegex(video_source.ProbeError, "非官方域名"):
+            video_source.resolve_xiaohongshu_url(self.SHORT_URL)
+
+    @mock.patch("video_source.subprocess.run")
+    def test_probe_records_urls_and_uses_browser_cookies(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "id": "64a1bc2d",
+                    "title": "视频笔记",
+                    "duration": 12,
+                    "webpage_url": self.CANONICAL_URL,
+                    "formats": [{"url": "https://media.example/video.mp4"}],
+                }
+            ),
+            stderr="",
+        )
+
+        result = video_source.probe_source(
+            self.CANONICAL_URL, cookies_from_browser="chrome"
+        )
+
+        self.assertEqual(result["original_url"], self.CANONICAL_URL)
+        self.assertEqual(result["canonical_url"], self.CANONICAL_URL)
+        self.assertIn("--cookies-from-browser", run.call_args.args[0])
+        self.assertNotIn("secret", json.dumps(result))
+
+    @mock.patch("video_source.subprocess.run")
+    def test_probe_rejects_image_only_note(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {"id": "64a1bc2d", "title": "图文", "duration": 1, "formats": []}
+            ),
+            stderr="",
+        )
+
+        with self.assertRaisesRegex(video_source.ProbeError, "纯图文"):
+            video_source.probe_source(self.CANONICAL_URL)
