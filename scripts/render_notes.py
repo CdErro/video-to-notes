@@ -69,6 +69,13 @@ def assess_notes(
         "table": bool(re.search(r"^\|.+\|\s*$", text, re.MULTILINE)),
         "figure": bool(re.search(r"!\[[^]]*]\([^)]+\)", text)),
     }
+    image_paths = re.findall(r"!\[[^]]*]\(([^)]+)\)", text)
+    if any("contact" in path.casefold() for path in image_paths):
+        issues.append("Contact sheets are analysis artifacts and cannot be embedded in notes.md")
+    if "figure" in source_signals and any(
+        not path.replace("\\", "/").startswith("figures/") for path in image_paths
+    ):
+        issues.append("Final note figures must use single-frame files under figures/")
     for signal in sorted(source_signals):
         if signal in checks and not checks[signal]:
             issues.append(f"Source contains {signal}, but notes.md does not")
@@ -121,10 +128,20 @@ def render(
         "duration_seconds": duration_seconds,
         "quality_rule": asdict(rule),
         "source_signals": sorted(source_signals),
+        "figures": [],
         "outputs": {"notes.md": {"status": "ready", "path": str(notes.resolve())}},
         "degraded": bool(issues),
         "degradation_reasons": issues,
     }
+    figure_manifest = output_dir / "figure_manifest.json"
+    if figure_manifest.is_file():
+        try:
+            manifest["figures"] = json.loads(
+                figure_manifest.read_text(encoding="utf-8-sig")
+            ).get("figures", [])
+        except (OSError, ValueError, AttributeError):
+            issues.append("figure_manifest.json is invalid")
+    manifest["degraded"] = bool(issues)
     manifest_path = output_dir / "run_manifest.json"
     if issues:
         write_manifest(manifest_path, manifest)
