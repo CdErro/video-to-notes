@@ -40,7 +40,7 @@ def install_skill(temporary_directory):
 def run_fresh_zsh(script, working_directory):
     zsh = shutil.which("zsh")
     if zsh is None:
-        raise RuntimeError("zsh is required for the documented shell smoke tests")
+        raise unittest.SkipTest("zsh is required for the documented shell smoke tests")
     environment = {
         "HOME": str(working_directory),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),

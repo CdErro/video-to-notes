@@ -30,6 +30,10 @@ python scripts/video_source.py detect "<URL>"
 python scripts/video_source.py probe "<URL>"
 ```
 
+X/Twitter 支持 `https://x.com/<user>/status/<id>[/video/<n>]`。下载字幕后使用
+`scripts/check_srt_health.py` 检查结构，并在视频时长 10%、50%、90% 三处进行音画语义抽样；
+任一检查失败时回退到 Whisper。
+
 运行测试：
 
 ```powershell

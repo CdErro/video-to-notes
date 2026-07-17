@@ -55,7 +55,7 @@ image-heavy PDFs with thin prose, or missing intermediate artifacts are automati
 | `cover.jpg` | Front-page cover |
 | `video.mp4` | Source for frames (may omit only if user forbids download and provides frames) |
 | `frames/` | Dense sample, default 1 frame / 15s |
-| `figures/` | Selected full-frame figures with **semantic names** (`fig_01_topic.jpg`, …) |
+| `figures/` | Selected full-frame figure assets with **semantic names** (`fig_01_topic.jpg`, …) |
 | `figure_manifest.tsv` | Header `figure\tframe\tstart\tend\ttopic` — one row per figure |
 | `figure_verification.txt` | Full stdout of `verify_figures.py` over **all** manifest timestamps |
 | `notes.tex` | Complete Chinese lecture notes |
