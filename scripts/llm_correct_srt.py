@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """
-Whisper SRT 的 LLM + 多模态段级修正（B 方案）
-
-用 Claude Code CLI (`claude -p`) 做后端，**无需 ANTHROPIC_API_KEY**
-直接复用你本地的登录态。
+Whisper SRT 的可配置 LLM + 多模态段级修正。
 
 方法：
     1. 把 SRT 按时长切段（每段 ~90s，按句号对齐）
     2. 每段选中间时刻的 frame 图（slide 作多模态校准）
-    3. 调 `claude -p --model opus --json-schema ... --output-format json`：
+    3. 调 Kimi CLI 或 OpenAI Responses API：
        输入 {原 SRT 段 + frame 路径 + 领域上下文}，
        模型用 Read tool 看图后输出修正后的 JSON
     4. 合并回完整 SRT
@@ -20,21 +17,23 @@ Whisper SRT 的 LLM + 多模态段级修正（B 方案）
         --frames frames/ \\
         --out corrected.srt \\
         --context "南京大学操作系统：链接和加载，讲师 jyy" \\
-        [--segment-seconds 90] [--model opus]
+        [--segment-seconds 90] [--provider kimi-cli] [--model MODEL]
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
-import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
+
+from llm_provider import Provider, ProviderError, create_provider
 
 
 @dataclass
@@ -110,7 +109,24 @@ def group_into_segments(
     return groups
 
 
-def pick_frame(frames_dir: Path, t: float) -> Path | None:
+def load_frame_manifest(path: Path) -> dict[str, float]:
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    if not lines:
+        return {}
+    headers = lines[0].split("\t")
+    frame_col = headers.index("frame")
+    time_name = "timestamp" if "timestamp" in headers else "start"
+    time_col = headers.index(time_name)
+    return {
+        fields[frame_col]: float(fields[time_col])
+        for line in lines[1:]
+        if line.strip() and len(fields := line.split("\t")) > max(frame_col, time_col)
+    }
+
+
+def pick_frame(
+    frames_dir: Path, t: float, manifest: dict[str, float] | None = None
+) -> Path | None:
     """选择最接近时间 t 的帧。仅支持以 fps=1/15 抽样、命名含数字后缀的 PNG。"""
     pngs = sorted(frames_dir.glob("*.png"))
     if not pngs:
@@ -119,18 +135,17 @@ def pick_frame(frames_dir: Path, t: float) -> Path | None:
     best: Path | None = None
     best_diff = 1e18
     for p in pngs:
-        m = re.search(r"(?:ch(\d+)_)?0*(\d+)\.png$", p.name)
+        if manifest and p.name in manifest:
+            nominal = manifest[p.name]
+            diff = abs(nominal - t)
+            if diff < best_diff:
+                best_diff, best = diff, p
+            continue
+        m = re.search(r"0*(\d+)\.png$", p.name)
         if not m:
             continue
-        ch = int(m.group(1)) if m.group(1) else 1
-        n = int(m.group(2))
-        # 粗略估计该帧时间（按 ffmpeg -ss offset 后开始编号）
-        # ch1_N 时间 ≈ (N-1)*15；ch2_N 时间 ≈ (N-1)*15（已是 ch2 本地时间）
-        # 这里我们不知道 chapter_offset，因此假定 frames_dir 里是整段视频的单一序列
-        # 或者 ch1/ch2 时间分别独立。调用方如果传了整段 frames，应保证命名连续。
-        # 保守做法：把 ch2 的帧映射到绝对时间（ch1 长度≈2623s）
-        CH1_LEN = 2623.0
-        nominal = (n - 1) * 15.0 + (CH1_LEN if ch == 2 else 0.0)
+        n = int(m.group(1))
+        nominal = (n - 1) * 15.0
         diff = abs(nominal - t)
         if diff < best_diff:
             best_diff = diff
@@ -192,104 +207,65 @@ SCHEMA = {
                     "text": {"type": "string"},
                 },
                 "required": ["index", "text"],
+                "additionalProperties": False,
             },
         }
     },
     "required": ["corrections"],
+    "additionalProperties": False,
 }
 
 
-def call_claude_cli(prompt: str, model: str, timeout: int = 300) -> str:
-    cmd = [
-        "claude",
-        "-p",
-        "--model",
-        model,
-        "--output-format",
-        "json",
-        "--json-schema",
-        json.dumps(SCHEMA),
-        "--no-session-persistence",
-        "--append-system-prompt",
-        SYSTEM_PROMPT,
-        prompt,
-    ]
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"claude CLI 失败 rc={result.returncode}: {result.stderr[:400]}")
-    return result.stdout
-
-
-def parse_model_output(s: str) -> tuple[dict[int, str], float]:
-    """CLI --output-format=json 返回一个事件数组，最后一个 event.type='result'
-    里面有 structured_output 字段（因为我们用了 --json-schema）
-    和 total_cost_usd 字段。"""
-    s = s.strip()
-    if not s:
-        return {}, 0.0
-    try:
-        events = json.loads(s)
-    except json.JSONDecodeError:
-        return {}, 0.0
-    cost = 0.0
-    inner: dict | None = None
-    if isinstance(events, list):
-        for ev in events:
-            if isinstance(ev, dict) and ev.get("type") == "result":
-                cost = float(ev.get("total_cost_usd") or 0.0)
-                inner = ev.get("structured_output")
-                if inner is None:
-                    # 回退：某些情况下 structured_output 可能放在 result 字符串里
-                    r = ev.get("result")
-                    if isinstance(r, str) and r.strip().startswith("{"):
-                        try:
-                            inner = json.loads(r)
-                        except json.JSONDecodeError:
-                            inner = None
-                break
-    if inner is None:
-        return {}, cost
-    arr = inner.get("corrections") if isinstance(inner, dict) else None
-    if not isinstance(arr, list):
-        return {}, cost
-    out: dict[int, str] = {}
-    for item in arr:
-        if isinstance(item, dict) and "index" in item and "text" in item:
-            out[int(item["index"])] = str(item["text"])
-    return out, cost
-
-
-def correct_segment(segment, frames_dir, context, cache_dir, model):
+def correct_segment(
+    segment, frames_dir, context, cache_dir, provider: Provider, manifest=None
+):
     mid = (segment[0].start + segment[-1].end) / 2
-    frame = pick_frame(frames_dir, mid) if frames_dir else None
-    cache_key = f"seg_{segment[0].index:05d}_{segment[-1].index:05d}.json"
+    frame = pick_frame(frames_dir, mid, manifest) if frames_dir else None
+    prompt = build_user_prompt(segment, frame, context)
+    frame_digest = ""
+    if frame and frame.is_file():
+        frame_digest = hashlib.sha256(frame.read_bytes()).hexdigest()
+    identity_payload = {
+        "provider": provider.name,
+        "model": provider.model,
+        "context": context,
+        "system_prompt": SYSTEM_PROMPT,
+        "schema": SCHEMA,
+        "segment": [
+            {"index": item.index, "start": item.start, "end": item.end, "text": item.text}
+            for item in segment
+        ],
+        "frame": str(frame.resolve()) if frame else "",
+        "frame_sha256": frame_digest,
+        "manifest": manifest or {},
+    }
+    identity = hashlib.sha256(
+        json.dumps(identity_payload, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()[:16]
+    cache_key = f"{identity}_{segment[0].index:05d}_{segment[-1].index:05d}.json"
     cache_path = cache_dir / cache_key
     if cache_path.exists():
         blob = json.loads(cache_path.read_text(encoding="utf-8"))
         # JSON 读出的 key 是 str，需转回 int
         corrs = {int(k): v for k, v in blob["corrections"].items()}
         return corrs, frame, True, 0.0
-    prompt = build_user_prompt(segment, frame, context)
     last_err = None
     for attempt in range(3):
         try:
-            raw = call_claude_cli(prompt, model)
-            parsed, cost = parse_model_output(raw)
-            if len(parsed) >= max(1, len(segment) // 2):
+            payload = provider.correct(SYSTEM_PROMPT + "\n\n" + prompt, frame, SCHEMA)
+            parsed = {
+                int(item["index"]): str(item["text"])
+                for item in payload["corrections"]
+            }
+            expected = {entry.index for entry in segment}
+            if set(parsed) == expected:
                 cache_path.write_text(
-                    json.dumps({"corrections": parsed, "cost_usd": cost}, ensure_ascii=False),
+                    json.dumps({"corrections": parsed}, ensure_ascii=False),
                     encoding="utf-8",
                 )
-                return parsed, frame, False, cost
+                return parsed, frame, False, 0.0
             last_err = f"只解析到 {len(parsed)} / {len(segment)} 条"
-        except subprocess.TimeoutExpired:
-            last_err = "超时"
-        except Exception as e:  # noqa: BLE001
+        except (ProviderError, KeyError, TypeError, ValueError) as e:
             last_err = str(e)[:200]
         time.sleep(2 + attempt * 2)
     print(
@@ -306,7 +282,10 @@ def main():
     ap.add_argument("--out", required=True, help="输出 SRT")
     ap.add_argument("--context", required=True, help="课程领域上下文（简短）")
     ap.add_argument("--segment-seconds", type=float, default=90.0)
-    ap.add_argument("--model", default="opus")
+    ap.add_argument("--provider", choices=("kimi-cli", "openai"), default="kimi-cli")
+    ap.add_argument("--model", default="")
+    ap.add_argument("--env-file", type=Path, default=Path(".env"))
+    ap.add_argument("--frame-manifest", type=Path)
     ap.add_argument("--cache", default=None)
     ap.add_argument("--limit", type=int, default=0, help="只处理前 N 段（调试用）")
     ap.add_argument("--parallel", type=int, default=1, help="并行段数")
@@ -315,13 +294,20 @@ def main():
     srt_path = Path(args.srt)
     entries = parse_srt(srt_path.read_text(encoding="utf-8"))
     frames_dir = Path(args.frames) if args.frames else None
+    manifest = load_frame_manifest(args.frame_manifest) if args.frame_manifest else None
+    model = args.model or ("gpt-5.4-mini" if args.provider == "openai" else "")
+    try:
+        provider = create_provider(args.provider, model, args.env_file)
+    except ProviderError as error:
+        print(error, file=sys.stderr)
+        return 2
     cache_dir = Path(args.cache) if args.cache else srt_path.with_suffix(".llm_cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     segments = group_into_segments(entries, args.segment_seconds)
     if args.limit > 0:
         segments = segments[: args.limit]
-    print(f"总条目：{len(entries)}，分段：{len(segments)}，模型：{args.model}")
+    print(f"总条目：{len(entries)}，分段：{len(segments)}，Provider：{args.provider}，模型：{model or 'default'}")
 
     index_to_text: dict[int, str] = {e.index: e.text for e in entries}
     cached = changed = 0
@@ -332,7 +318,7 @@ def main():
     def worker(seg):
         t0 = time.time()
         corrections, frame, was_cached, cost = correct_segment(
-            seg, frames_dir, args.context, cache_dir, args.model
+            seg, frames_dir, args.context, cache_dir, provider, manifest
         )
         return seg, corrections, frame, was_cached, cost, time.time() - t0
 
@@ -371,7 +357,8 @@ def main():
     )
     print(f"\n输出：{args.out}")
     print(f"缓存命中：{cached}/{len(segments)}；文本变化条目：{changed}；总成本 ${total_cost:.2f}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

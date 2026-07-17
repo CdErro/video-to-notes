@@ -41,6 +41,18 @@ X/Twitter 支持 `https://x.com/<user>/status/<id>[/video/<n>]`。下载字幕�
 python scripts/video_source.py probe "<小红书 URL>" --cookies-from-browser chrome
 ```
 
+字幕语义修正可选择 Kimi CLI 或 OpenAI。Kimi 复用本地登录态；OpenAI 只读取
+`.env` 或当前进程中的标准变量 `OPENAI_BASE_URL`、`OPENAI_API_KEY`：
+
+```powershell
+conda run -n vid2rich python scripts/llm_correct_srt.py `
+  --srt audio.srt --frames frames --out corrected.srt --context "通用视频" `
+  --provider openai --model "<模型名>" --env-file .env
+```
+
+使用 Kimi 时改为 `--provider kimi-cli`，可用 `--model` 选择模型。Provider
+超时或输出结构不合法时最多重试三次，随后保留原字幕，不会自动切换服务。
+
 运行测试：
 
 ```powershell

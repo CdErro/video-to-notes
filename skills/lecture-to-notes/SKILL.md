@@ -323,13 +323,15 @@ working example. This dramatically reduces same-sound errors like
 python3 "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/correct_srt.py" audio.srt \
     -g "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/whisper_prompts/glossary_nju_os.json" --stats
 
-# Stage B — slow LLM + multimodal fix (uses Claude Code CLI, no API key needed)
+# Stage B — slow LLM + multimodal fix (configurable Kimi CLI or OpenAI)
 python3 "/ABSOLUTE/PATH/TO/lecture-to-notes/assets/llm_correct_srt.py" \
     --srt audio.srt --frames frames/ --out corrected.srt \
-    --context "南京大学操作系统原理，讲师 jyy"
+    --context "视频领域与讲者信息" --provider kimi-cli
 ```
 Stage A is essentially free and catches 80% of wrong characters. Stage B is expensive
-(one Claude call per ~90s of audio) and only worth running for notes you plan to publish.
+(one provider call per ~90s of audio) and only worth running for notes you plan to publish.
+For OpenAI, use `--provider openai --model <model> --env-file .env`; credentials are
+read only from `OPENAI_API_KEY`, with optional `OPENAI_BASE_URL`.
 
 **Stage 4 — Visual-only mode** (when audio quality is unusable):
 Skip subtitles. Use dense frame sampling (fps=1) and rely entirely on visual content.
@@ -595,7 +597,7 @@ the user a PDF that fails this gate.
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/check_srt_health.py`: Structural health gate for downloaded X/Twitter SRT tracks
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/clean_subs.py`: YouTube auto-subtitle deduplication
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/correct_srt.py`: Whisper SRT dictionary-level fix (fast, data-driven)
-- `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/llm_correct_srt.py`: Whisper SRT LLM + multimodal segment-level fix (slow, uses Claude Code CLI — no API key needed)
+- `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/llm_correct_srt.py`: Whisper SRT LLM + multimodal segment-level fix (Kimi CLI or OpenAI)
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/verify_figures.py`: Three-way figure verification (timestamp × subtitle × frame)
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/prepare_cover.sh`: Cover image format conversion (webp/png → jpg)
 - `/ABSOLUTE/PATH/TO/lecture-to-notes/assets/smart_crop.py`: Slide-region detector; optional and experimental, while production uses full frames
