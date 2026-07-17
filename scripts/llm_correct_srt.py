@@ -221,9 +221,27 @@ def correct_segment(
 ):
     mid = (segment[0].start + segment[-1].end) / 2
     frame = pick_frame(frames_dir, mid, manifest) if frames_dir else None
+    prompt = build_user_prompt(segment, frame, context)
+    frame_digest = ""
+    if frame and frame.is_file():
+        frame_digest = hashlib.sha256(frame.read_bytes()).hexdigest()
+    identity_payload = {
+        "provider": provider.name,
+        "model": provider.model,
+        "context": context,
+        "system_prompt": SYSTEM_PROMPT,
+        "schema": SCHEMA,
+        "segment": [
+            {"index": item.index, "start": item.start, "end": item.end, "text": item.text}
+            for item in segment
+        ],
+        "frame": str(frame.resolve()) if frame else "",
+        "frame_sha256": frame_digest,
+        "manifest": manifest or {},
+    }
     identity = hashlib.sha256(
-        f"{provider.name}:{provider.model}:{context}".encode()
-    ).hexdigest()[:10]
+        json.dumps(identity_payload, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()[:16]
     cache_key = f"{identity}_{segment[0].index:05d}_{segment[-1].index:05d}.json"
     cache_path = cache_dir / cache_key
     if cache_path.exists():
@@ -231,7 +249,6 @@ def correct_segment(
         # JSON 读出的 key 是 str，需转回 int
         corrs = {int(k): v for k, v in blob["corrections"].items()}
         return corrs, frame, True, 0.0
-    prompt = build_user_prompt(segment, frame, context)
     last_err = None
     for attempt in range(3):
         try:
@@ -344,4 +361,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

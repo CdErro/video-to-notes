@@ -72,6 +72,30 @@ class KimiProviderTests(unittest.TestCase):
         with self.assertRaises(llm_provider.ProviderError):
             llm_provider.KimiCLIProvider().correct("prompt", None, SCHEMA)
 
+    def test_local_validation_rejects_extra_root_and_item_fields(self):
+        strict = {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["items"],
+            "additionalProperties": False,
+        }
+        with self.assertRaises(llm_provider.ProviderError):
+            llm_provider.validate_json_schema({"items": [], "extra": True}, strict)
+        with self.assertRaises(llm_provider.ProviderError):
+            llm_provider.validate_json_schema(
+                {"items": [{"text": "ok", "extra": True}]}, strict
+            )
+
 
 class OpenAIProviderTests(unittest.TestCase):
     def test_uses_responses_api_and_custom_base_url(self):

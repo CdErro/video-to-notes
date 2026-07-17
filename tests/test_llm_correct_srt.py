@@ -1,3 +1,5 @@
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -85,6 +87,60 @@ class CorrectionTests(unittest.TestCase):
 
         self.assertEqual({}, corrections)
         self.assertEqual(3, provider.calls)
+
+    def test_cache_changes_when_subtitle_text_changes(self):
+        provider = FakeProvider(
+            [
+                {"corrections": [{"index": 1, "text": "first-fixed"}]},
+                {"corrections": [{"index": 1, "text": "second-fixed"}]},
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            first = [llm_correct_srt.SrtEntry(1, 0, 1, "first")]
+            second = [llm_correct_srt.SrtEntry(1, 0, 1, "second")]
+
+            llm_correct_srt.correct_segment(first, None, "general", cache, provider)
+            result, _, was_cached, _ = llm_correct_srt.correct_segment(
+                second, None, "general", cache, provider
+            )
+
+        self.assertEqual({1: "second-fixed"}, result)
+        self.assertFalse(was_cached)
+        self.assertEqual(2, provider.calls)
+
+    def test_cli_provider_initialization_failure_is_nonzero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            srt = Path(directory) / "audio.srt"
+            srt.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\ntext\n", encoding="utf-8"
+            )
+            environment = os.environ.copy()
+            environment.pop("OPENAI_API_KEY", None)
+            environment.pop("OPNEAI_API_KEY", None)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "llm_correct_srt.py"),
+                    "--srt",
+                    str(srt),
+                    "--out",
+                    str(Path(directory) / "out.srt"),
+                    "--context",
+                    "general",
+                    "--provider",
+                    "openai",
+                    "--env-file",
+                    str(Path(directory) / "missing.env"),
+                ],
+                capture_output=True,
+                text=True,
+                env=environment,
+                check=False,
+            )
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("OPENAI_API_KEY", result.stderr)
 
 
 if __name__ == "__main__":

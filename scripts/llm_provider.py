@@ -57,10 +57,14 @@ def validate_json_schema(value: Any, schema: dict, path: str = "$") -> None:
     if expected and not _matches_type(value, expected):
         raise ProviderError(f"{path} must be {expected}")
     if isinstance(value, dict):
+        properties = schema.get("properties", {})
+        if schema.get("additionalProperties") is False:
+            extras = set(value) - set(properties)
+            if extras:
+                raise ProviderError(f"{path} has unsupported fields: {sorted(extras)}")
         for key in schema.get("required", []):
             if key not in value:
                 raise ProviderError(f"{path}.{key} is required")
-        properties = schema.get("properties", {})
         for key, child in value.items():
             if key in properties:
                 validate_json_schema(child, properties[key], f"{path}.{key}")
