@@ -53,6 +53,11 @@ conda run -n vid2rich python scripts/llm_correct_srt.py `
 使用 Kimi 时改为 `--provider kimi-cli`，可用 `--model` 选择模型。Provider
 超时或输出结构不合法时最多重试三次，随后保留原字幕，不会自动切换服务。
 
+词典默认合并 `general` 与根据上下文识别的领域；南京大学操作系统词条已迁移为
+可选 `nju-os` 种子。LLM 每次成功修正后都会校验证据并更新用户词典，同时在当前
+输出目录生成 `glossary_update.json`。可用 `--domain <name>` 覆盖自动识别；用户
+词典保存在 `~/.video-to-notes/glossaries/`，冲突只记录、不覆盖。
+
 运行测试：
 
 ```powershell
