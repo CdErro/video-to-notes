@@ -115,6 +115,17 @@ class EnvironmentInstallTests(unittest.TestCase):
 
         self.assertIn('$Target = "venv:.venv"', setup)
 
+    @mock.patch("environment.installation_commands", return_value=[])
+    @mock.patch("environment.manual_install_guidance", return_value=["Install FFmpeg"])
+    @mock.patch("environment.doctor", return_value=[])
+    def test_install_fails_when_manual_dependencies_remain(
+        self, _doctor, _guidance, _commands
+    ):
+        with mock.patch.object(sys, "argv", ["environment.py", "install", "--yes"]):
+            result = environment.main()
+
+        self.assertEqual(1, result)
+
     def test_json_report_is_machine_readable(self):
         result = environment.CheckResult("Python", "runtime", "ready", True, "3.13")
         with mock.patch("builtins.print") as printer:

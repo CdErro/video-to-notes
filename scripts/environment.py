@@ -326,7 +326,10 @@ def main() -> int:
         print("No supported system package manager was found. Install manually:")
         for item in guidance:
             print(f"  - {item}")
-    return run_install(commands, args.yes)
+        if not commands:
+            return 1
+    result = run_install(commands, args.yes)
+    return 1 if result == 0 and guidance else result
 
 
 if __name__ == "__main__":
