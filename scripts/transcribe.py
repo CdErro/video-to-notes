@@ -37,6 +37,29 @@ def default_config() -> TranscriptionConfig:
     return TranscriptionConfig(cpu_threads=max(1, min(8, os.cpu_count() or 1)))
 
 
+def validate_config(config: TranscriptionConfig) -> TranscriptionConfig:
+    if not isinstance(config.model, str) or config.model not in {"tiny", "base", "small", "medium"}:
+        raise TranscriptionError("Whisper model must be tiny, base, small, or medium")
+    if not isinstance(config.device, str) or config.device not in {"cpu", "cuda"}:
+        raise TranscriptionError("Whisper device must be cpu or cuda")
+    valid_compute_types = {"int8", "int8_float16", "float16", "float32"}
+    if not isinstance(config.compute_type, str) or config.compute_type not in valid_compute_types:
+        raise TranscriptionError(
+            "Whisper compute_type must be int8, int8_float16, float16, or float32"
+        )
+    if not isinstance(config.cpu_threads, int) or isinstance(config.cpu_threads, bool) or config.cpu_threads < 1:
+        raise TranscriptionError("Whisper cpu_threads must be a positive integer")
+    if config.language is not None and (
+        not isinstance(config.language, str) or not config.language.strip()
+    ):
+        raise TranscriptionError("Whisper language must be a non-empty string or omitted")
+    if not isinstance(config.vad_filter, bool):
+        raise TranscriptionError("Whisper vad_filter must be true or false")
+    if config.cache_dir is not None and not isinstance(config.cache_dir, str):
+        raise TranscriptionError("Whisper cache_dir must be a path string or omitted")
+    return config
+
+
 def load_config(path: Path | None) -> TranscriptionConfig:
     defaults = asdict(default_config())
     if path and path.is_file():
@@ -50,16 +73,7 @@ def load_config(path: Path | None) -> TranscriptionConfig:
         if not isinstance(section, dict):
             raise TranscriptionError("[whisper] configuration must be a table")
         defaults.update({key: value for key, value in section.items() if key in defaults})
-    config = TranscriptionConfig(**defaults)
-    if config.model not in {"tiny", "base", "small", "medium"}:
-        raise TranscriptionError("Whisper model must be tiny, base, small, or medium")
-    if config.device not in {"cpu", "cuda"}:
-        raise TranscriptionError("Whisper device must be cpu or cuda")
-    if not isinstance(config.cpu_threads, int) or isinstance(config.cpu_threads, bool) or config.cpu_threads < 1:
-        raise TranscriptionError("Whisper cpu_threads must be a positive integer")
-    if not isinstance(config.vad_filter, bool):
-        raise TranscriptionError("Whisper vad_filter must be true or false")
-    return config
+    return validate_config(TranscriptionConfig(**defaults))
 
 
 def format_srt_time(seconds: float) -> str:
@@ -68,6 +82,20 @@ def format_srt_time(seconds: float) -> str:
     minutes, remainder = divmod(remainder, 60_000)
     secs, millis = divmod(remainder, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", newline="\n", delete=False, dir=path.parent, suffix=".tmp"
+    ) as handle:
+        handle.write(text)
+        temporary = Path(handle.name)
+    try:
+        temporary.replace(path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def transcribe_media(
@@ -116,13 +144,7 @@ def transcribe_media(
         )
     if not blocks:
         raise TranscriptionError("Whisper returned only empty speech segments")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", newline="\n", delete=False, dir=output.parent, suffix=".tmp"
-    ) as handle:
-        handle.write("\n\n".join(blocks) + "\n")
-        temporary = Path(handle.name)
-    temporary.replace(output)
+    atomic_write_text(output, "\n\n".join(blocks) + "\n")
     metadata = {
         "engine": "faster-whisper",
         "model": config.model,
@@ -135,8 +157,9 @@ def transcribe_media(
         "segments": len(blocks),
         "output": str(output.resolve()),
     }
-    output.with_name("transcription.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    atomic_write_text(
+        output.with_name("transcription.json"),
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
     )
     return metadata
 
@@ -185,7 +208,7 @@ def main() -> int:
         }
         values = asdict(config)
         values.update({key: value for key, value in overrides.items() if value is not None})
-        config = TranscriptionConfig(**values)
+        config = validate_config(TranscriptionConfig(**values))
         domains = ["general", args.domain] if args.domain and args.domain != "general" else detect_domains(args.context)
         prompt = build_prompt(args.context, domains, args.glossary_root)
         print(json.dumps(transcribe_media(args.media, args.output, config, prompt), ensure_ascii=False, indent=2))

@@ -34,6 +34,16 @@ class TranscribeTests(unittest.TestCase):
         self.assertEqual(4, config.cpu_threads)
         self.assertFalse(config.vad_filter)
 
+    def test_invalid_cli_style_override_is_rejected(self):
+        values = {**transcribe.asdict(transcribe.default_config()), "model": "bad"}
+        with self.assertRaisesRegex(transcribe.TranscriptionError, "model"):
+            transcribe.validate_config(transcribe.TranscriptionConfig(**values))
+
+    def test_invalid_compute_type_is_rejected(self):
+        values = {**transcribe.asdict(transcribe.default_config()), "compute_type": 7}
+        with self.assertRaisesRegex(transcribe.TranscriptionError, "compute_type"):
+            transcribe.validate_config(transcribe.TranscriptionConfig(**values))
+
     def test_transcription_writes_srt_and_metadata(self):
         segment = types.SimpleNamespace(start=1.25, end=2.5, text=" 你好 ")
         info = types.SimpleNamespace(language="zh", language_probability=0.99)

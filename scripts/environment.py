@@ -206,15 +206,24 @@ def check_credentials(required: set[str]) -> list[CheckResult]:
 
 def whisper_settings(path: Path = CONFIG_PATH) -> dict:
     defaults = {"model": "small", "cache_dir": None}
-    if not path.exists() or tomllib is None:
+    if not path.exists():
         return defaults
+    if tomllib is None:
+        raise ValueError("Python 3.11+ is required to read TOML configuration")
     try:
         payload = tomllib.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return defaults
+    except (OSError, ValueError) as error:
+        raise ValueError(f"Cannot read Whisper configuration: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("TOML configuration must be an object")
     section = payload.get("whisper", {})
-    if isinstance(section, dict):
-        defaults.update({key: section[key] for key in defaults if key in section})
+    if not isinstance(section, dict):
+        raise ValueError("[whisper] configuration must be a table")
+    defaults.update({key: section[key] for key in defaults if key in section})
+    if defaults["model"] not in {"tiny", "base", "small", "medium"}:
+        raise ValueError("Whisper model must be tiny, base, small, or medium")
+    if defaults["cache_dir"] is not None and not isinstance(defaults["cache_dir"], str):
+        raise ValueError("Whisper cache_dir must be a path string or omitted")
     return defaults
 
 
@@ -246,12 +255,12 @@ def doctor(
     provider: str,
     config_path: Path = CONFIG_PATH,
     with_transcription: bool = False,
-    whisper_model: str = "small",
+    whisper_model: str | None = None,
 ) -> list[CheckResult]:
     required = required_names(output_format, provider, with_transcription)
     overrides = load_tool_overrides(config_path)
     settings = whisper_settings(config_path)
-    model = whisper_model or str(settings["model"])
+    model = whisper_model or settings["model"]
     return (
         check_python(required)
         + check_commands(required, overrides)
@@ -292,21 +301,43 @@ def target_python(target: str) -> tuple[list[str], list[list[str]]]:
     raise ValueError("Target must use conda:<name> or venv:<path>")
 
 
+def target_requirements_ready(python_command: list[str]) -> bool:
+    imports = ["openai", "faster_whisper", "PIL", "yaml", "yt_dlp"]
+    script = (
+        "import importlib.util,sys; names=" + repr(imports)
+        + "; sys.exit(0 if all(importlib.util.find_spec(name) for name in names) else 1)"
+    )
+    try:
+        completed = subprocess.run(
+            python_command + ["-c", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
 def installation_commands(
-    results: list[CheckResult], target: str, whisper_model: str = "small"
+    results: list[CheckResult],
+    target: str,
+    whisper_model: str = "small",
+    whisper_cache_dir: str | None = None,
 ) -> list[list[str]]:
     python_command, commands = target_python(target)
-    missing_python = any(
-        item.kind == "python_package" and item.required and item.status != "ready"
-        for item in results
-    )
-    if missing_python:
+    if commands or not target_requirements_ready(python_command):
         commands.append(python_command + ["-m", "pip", "install", "-r", str(REQUIREMENTS_PATH)])
     if any(item.name == "Whisper model" and item.required and item.status != "ready" for item in results):
-        commands.append(
-            python_command
-            + [str(ROOT / "scripts" / "transcribe.py"), "download-model", "--model", whisper_model]
-        )
+        command = python_command + [
+            str(ROOT / "scripts" / "transcribe.py"), "download-model", "--model", whisper_model
+        ]
+        if whisper_cache_dir:
+            command.extend(["--cache-dir", whisper_cache_dir])
+        commands.append(command)
     package_map = WINDOWS_PACKAGES if os.name == "nt" else MACOS_PACKAGES if sys.platform == "darwin" else LINUX_PACKAGES
     manager = "winget" if os.name == "nt" else "brew" if sys.platform == "darwin" else "apt"
     manager_available = shutil.which(manager) is not None
@@ -363,7 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--provider", choices=("kimi-cli", "openai", "none"), default="kimi-cli")
         sub.add_argument("--config", type=Path, default=CONFIG_PATH)
         sub.add_argument("--with-transcription", action="store_true")
-        sub.add_argument("--whisper-model", default="small")
+        sub.add_argument("--whisper-model")
         if action == "doctor":
             sub.add_argument("--json", action="store_true")
         else:
@@ -374,18 +405,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    results = doctor(
-        args.format,
-        args.provider,
-        args.config,
-        args.with_transcription,
-        args.whisper_model,
-    )
+    try:
+        settings = whisper_settings(args.config)
+        whisper_model = args.whisper_model or settings["model"]
+        results = doctor(
+            args.format,
+            args.provider,
+            args.config,
+            args.with_transcription,
+            whisper_model,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"Cannot read configuration: {error}", file=sys.stderr)
+        return 2
     if args.action == "doctor":
         print_report(results, args.json)
         return int(any(item.required and item.status != "ready" for item in results))
     try:
-        commands = installation_commands(results, args.target, args.whisper_model)
+        commands = installation_commands(
+            results, args.target, whisper_model, settings["cache_dir"]
+        )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"Cannot prepare installation: {error}", file=sys.stderr)
         return 2
