@@ -101,6 +101,16 @@ class RenderNotesTests(unittest.TestCase):
             issues,
         )
 
+    def test_renamed_contact_sheet_and_traversal_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path in ("figures/sheet_01.jpg", "figures/../evidence/sheet_01.jpg"):
+                text = valid_short_notes() + f"\n![绕过]({path})\n"
+                _, issues = render_notes.assess_notes(text, 120, set(), root)
+                self.assertIn(
+                    "Final note figures must use single-frame files under figures/", issues
+                )
+
     def test_single_frame_figure_and_mapping_enter_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -109,6 +119,8 @@ class RenderNotesTests(unittest.TestCase):
                 valid_short_notes() + "\n![界面](figures/figure_001.jpg)\n",
                 encoding="utf-8",
             )
+            (root / "figures").mkdir()
+            (root / "figures/figure_001.jpg").touch()
             (root / "figure_manifest.json").write_text(
                 json.dumps({"figures": [{"path": "figures/figure_001.jpg", "timestamp": 8}]}),
                 encoding="utf-8",
@@ -129,6 +141,28 @@ class RenderNotesTests(unittest.TestCase):
 
             code, manifest = render_notes.render(
                 source, root, "markdown", 120, "youtube", "general", "none", set()
+            )
+
+        self.assertEqual(2, code)
+        self.assertTrue(manifest["degraded"])
+        self.assertIn("figure_manifest.json is invalid", manifest["degradation_reasons"])
+
+    def test_manifest_requires_array_and_matching_note_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "draft.md"
+            source.write_text(
+                valid_short_notes() + "\n![界面](figures/figure_001.jpg)\n",
+                encoding="utf-8",
+            )
+            (root / "figures").mkdir()
+            (root / "figures/figure_001.jpg").touch()
+            (root / "figure_manifest.json").write_text(
+                json.dumps({"figures": "bad"}), encoding="utf-8"
+            )
+
+            code, manifest = render_notes.render(
+                source, root, "markdown", 120, "youtube", "general", "none", {"figure"}
             )
 
         self.assertEqual(2, code)

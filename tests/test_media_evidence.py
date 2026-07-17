@@ -59,6 +59,18 @@ class MediaEvidenceTests(unittest.TestCase):
                     [{"timestamp": 1}], "ffmpeg",
                 )
 
+    def test_empty_candidates_still_write_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "new-run"
+            records = media_evidence.materialize_figures(
+                Path(directory) / "video.mp4", output, [], "ffmpeg"
+            )
+
+            saved = json.loads((output / "figure_manifest.json").read_text())
+
+        self.assertEqual([], records)
+        self.assertEqual([], saved["figures"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -65,6 +65,7 @@ def materialize_figures(
     candidates: list[dict],
     ffmpeg: str | None = None,
 ) -> list[dict]:
+    output_dir.mkdir(parents=True, exist_ok=True)
     executable = ffmpeg or shutil.which("ffmpeg")
     if not executable:
         raise EvidenceError("FFmpeg executable was not found")
