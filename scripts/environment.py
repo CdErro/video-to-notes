@@ -40,8 +40,7 @@ class CheckResult:
 PYTHON_PACKAGES = {
     "openai": ("openai", "openai", (2, 44, 0)),
     "yt-dlp": ("yt_dlp", "yt-dlp", (2026, 6, 9)),
-    "Whisper": ("whisper", "openai-whisper", None),
-    "Torch": ("torch", "torch", None),
+    "Faster Whisper": ("faster_whisper", "faster-whisper", (1, 2, 1)),
     "Pillow": ("PIL", "Pillow", None),
 }
 
@@ -106,7 +105,9 @@ def load_tool_overrides(path: Path = CONFIG_PATH) -> dict[str, str]:
     return {str(key): str(value) for key, value in tools.items() if value}
 
 
-def required_names(output_format: str, provider: str) -> set[str]:
+def required_names(
+    output_format: str, provider: str, with_transcription: bool = False
+) -> set[str]:
     required = {"Python", "yt-dlp", "FFmpeg", "FFprobe", "yt-dlp CLI"}
     if output_format in {"latex", "pdf", "all"}:
         required.add("Pandoc")
@@ -116,6 +117,8 @@ def required_names(output_format: str, provider: str) -> set[str]:
         required.add("Kimi Code CLI")
     if provider == "openai":
         required.update({"openai", "OPENAI_API_KEY"})
+    if with_transcription:
+        required.update({"Faster Whisper", "Whisper model"})
     return required
 
 
@@ -201,10 +204,60 @@ def check_credentials(required: set[str]) -> list[CheckResult]:
     return [CheckResult("OPENAI_API_KEY", "credential", status, is_required, "set" if present else "not set")]
 
 
-def doctor(output_format: str, provider: str, config_path: Path = CONFIG_PATH) -> list[CheckResult]:
-    required = required_names(output_format, provider)
+def whisper_settings(path: Path = CONFIG_PATH) -> dict:
+    defaults = {"model": "small", "cache_dir": None}
+    if not path.exists() or tomllib is None:
+        return defaults
+    try:
+        payload = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return defaults
+    section = payload.get("whisper", {})
+    if isinstance(section, dict):
+        defaults.update({key: section[key] for key in defaults if key in section})
+    return defaults
+
+
+def check_whisper_model(required: bool, model: str, cache_dir: str | None) -> CheckResult:
+    try:
+        root = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "huggingface" / "hub"
+    except TypeError:
+        return CheckResult(
+            "Whisper model", "model", "found_unusable", required, "cache_dir must be a path"
+        )
+    repository = root / f"models--Systran--faster-whisper-{model}" / "snapshots"
+    required_files = {"model.bin", "config.json", "tokenizer.json"}
+    found = any(
+        required_files <= {item.name for item in snapshot.iterdir() if item.is_file()}
+        for snapshot in repository.iterdir()
+    ) if repository.is_dir() else False
+    return CheckResult(
+        "Whisper model",
+        "model",
+        "ready" if found else ("required_missing" if required else "optional_missing"),
+        required,
+        f"{model} ({'cached' if found else 'not cached'})",
+        str(repository) if found else None,
+    )
+
+
+def doctor(
+    output_format: str,
+    provider: str,
+    config_path: Path = CONFIG_PATH,
+    with_transcription: bool = False,
+    whisper_model: str = "small",
+) -> list[CheckResult]:
+    required = required_names(output_format, provider, with_transcription)
     overrides = load_tool_overrides(config_path)
-    return check_python(required) + check_commands(required, overrides) + check_credentials(required)
+    settings = whisper_settings(config_path)
+    model = whisper_model or str(settings["model"])
+    return (
+        check_python(required)
+        + check_commands(required, overrides)
+        + check_credentials(required)
+        + [check_whisper_model("Whisper model" in required, model, settings["cache_dir"])]
+    )
 
 
 def print_report(results: list[CheckResult], as_json: bool) -> None:
@@ -239,7 +292,9 @@ def target_python(target: str) -> tuple[list[str], list[list[str]]]:
     raise ValueError("Target must use conda:<name> or venv:<path>")
 
 
-def installation_commands(results: list[CheckResult], target: str) -> list[list[str]]:
+def installation_commands(
+    results: list[CheckResult], target: str, whisper_model: str = "small"
+) -> list[list[str]]:
     python_command, commands = target_python(target)
     missing_python = any(
         item.kind == "python_package" and item.required and item.status != "ready"
@@ -247,6 +302,11 @@ def installation_commands(results: list[CheckResult], target: str) -> list[list[
     )
     if missing_python:
         commands.append(python_command + ["-m", "pip", "install", "-r", str(REQUIREMENTS_PATH)])
+    if any(item.name == "Whisper model" and item.required and item.status != "ready" for item in results):
+        commands.append(
+            python_command
+            + [str(ROOT / "scripts" / "transcribe.py"), "download-model", "--model", whisper_model]
+        )
     package_map = WINDOWS_PACKAGES if os.name == "nt" else MACOS_PACKAGES if sys.platform == "darwin" else LINUX_PACKAGES
     manager = "winget" if os.name == "nt" else "brew" if sys.platform == "darwin" else "apt"
     manager_available = shutil.which(manager) is not None
@@ -302,6 +362,8 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--format", choices=("markdown", "latex", "pdf", "all"), default="markdown")
         sub.add_argument("--provider", choices=("kimi-cli", "openai", "none"), default="kimi-cli")
         sub.add_argument("--config", type=Path, default=CONFIG_PATH)
+        sub.add_argument("--with-transcription", action="store_true")
+        sub.add_argument("--whisper-model", default="small")
         if action == "doctor":
             sub.add_argument("--json", action="store_true")
         else:
@@ -312,12 +374,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    results = doctor(args.format, args.provider, args.config)
+    results = doctor(
+        args.format,
+        args.provider,
+        args.config,
+        args.with_transcription,
+        args.whisper_model,
+    )
     if args.action == "doctor":
         print_report(results, args.json)
         return int(any(item.required and item.status != "ready" for item in results))
     try:
-        commands = installation_commands(results, args.target)
+        commands = installation_commands(results, args.target, args.whisper_model)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"Cannot prepare installation: {error}", file=sys.stderr)
         return 2

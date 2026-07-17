@@ -15,6 +15,7 @@ docs/papers/
 # Local Python environments and caches
 .venv/
 .env
+.video-to-notes.toml
 .pytest_cache/
 *.pyo
 

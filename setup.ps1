@@ -6,12 +6,12 @@ param(
 $scriptPath = Join-Path $PSScriptRoot "scripts\environment.py"
 if (Get-Command conda -ErrorAction SilentlyContinue) {
     if (-not $Target) { $Target = "conda:video-to-notes" }
-    $arguments = @($scriptPath, "install", "--target", $Target)
+    $arguments = @($scriptPath, "install", "--target", $Target, "--with-transcription")
     if ($Yes) { $arguments += "--yes" }
     & conda run -n base python @arguments
 } elseif (Get-Command python -ErrorAction SilentlyContinue) {
     if (-not $Target) { $Target = "venv:.venv" }
-    $arguments = @($scriptPath, "install", "--target", $Target)
+    $arguments = @($scriptPath, "install", "--target", $Target, "--with-transcription")
     if ($Yes) { $arguments += "--yes" }
     & python @arguments
 } else {
