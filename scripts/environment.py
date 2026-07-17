@@ -205,26 +205,13 @@ def check_credentials(required: set[str]) -> list[CheckResult]:
 
 
 def whisper_settings(path: Path = CONFIG_PATH) -> dict:
-    defaults = {"model": "small", "cache_dir": None}
-    if not path.exists():
-        return defaults
-    if tomllib is None:
-        raise ValueError("Python 3.11+ is required to read TOML configuration")
+    from transcribe import TranscriptionError, load_config
+
     try:
-        payload = tomllib.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError) as error:
-        raise ValueError(f"Cannot read Whisper configuration: {error}") from error
-    if not isinstance(payload, dict):
-        raise ValueError("TOML configuration must be an object")
-    section = payload.get("whisper", {})
-    if not isinstance(section, dict):
-        raise ValueError("[whisper] configuration must be a table")
-    defaults.update({key: section[key] for key in defaults if key in section})
-    if defaults["model"] not in {"tiny", "base", "small", "medium"}:
-        raise ValueError("Whisper model must be tiny, base, small, or medium")
-    if defaults["cache_dir"] is not None and not isinstance(defaults["cache_dir"], str):
-        raise ValueError("Whisper cache_dir must be a path string or omitted")
-    return defaults
+        config = load_config(path if path.exists() else None)
+    except (OSError, ValueError, TranscriptionError) as error:
+        raise ValueError(str(error)) from error
+    return {"model": config.model, "cache_dir": config.cache_dir}
 
 
 def check_whisper_model(required: bool, model: str, cache_dir: str | None) -> CheckResult:
@@ -302,10 +289,14 @@ def target_python(target: str) -> tuple[list[str], list[list[str]]]:
 
 
 def target_requirements_ready(python_command: list[str]) -> bool:
-    imports = ["openai", "faster_whisper", "PIL", "yaml", "yt_dlp"]
+    # Conda on Windows can corrupt multiline `python -c` arguments, so keep this script one line.
     script = (
-        "import importlib.util,sys; names=" + repr(imports)
-        + "; sys.exit(0 if all(importlib.util.find_spec(name) for name in names) else 1)"
+        "import importlib.metadata as m,re,sys;"
+        "v=lambda s:tuple(map(int,re.search(r'\\d+(?:\\.\\d+)+',s).group().split('.')));"
+        "r=[('openai',(2,44,0),1),('faster-whisper',(1,2,1),1),"
+        "('Pillow',(),0),('PyYAML',(6,0,3),1),('yt-dlp',(2026,6,9),0)];"
+        "x=[(v(m.version(n)),q,e) for n,q,e in r];"
+        "sys.exit(0 if all((a==q) if e else ((not q) or a>=q) for a,q,e in x) else 1)"
     )
     try:
         completed = subprocess.run(

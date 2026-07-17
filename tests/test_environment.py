@@ -58,6 +58,13 @@ class EnvironmentDoctorTests(unittest.TestCase):
 
         self.assertEqual("required_missing", result.status)
 
+    def test_runtime_whisper_fields_are_validated_by_doctor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "bad.toml"
+            config.write_text("[whisper]\ncpu_threads=0\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "cpu_threads"):
+                environment.whisper_settings(config)
+
     @mock.patch("environment.shutil.which", return_value=None)
     def test_missing_required_command_is_reported(self, _which):
         results = environment.check_commands({"FFmpeg"}, {})
@@ -100,6 +107,17 @@ class EnvironmentDoctorTests(unittest.TestCase):
 
 
 class EnvironmentInstallTests(unittest.TestCase):
+    @mock.patch("environment.subprocess.run")
+    def test_target_requirements_version_check_controls_readiness(self, run):
+        run.side_effect = [
+            mock.Mock(returncode=0),
+            mock.Mock(returncode=1),
+        ]
+
+        self.assertTrue(environment.target_requirements_ready(["target-python"]))
+        self.assertFalse(environment.target_requirements_ready(["target-python"]))
+        self.assertIn("faster-whisper", run.call_args_list[0].args[0][-1])
+
     @mock.patch("environment.target_requirements_ready", return_value=True)
     @mock.patch("environment.target_python")
     def test_installation_is_idempotent_when_everything_is_ready(
