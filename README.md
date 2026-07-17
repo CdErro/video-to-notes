@@ -3,7 +3,7 @@
 AI 驱动的视频讲义与论文解读工具集合，Fork 自
 [`ysyecust/lecture-to-notes`](https://github.com/ysyecust/lecture-to-notes)。
 
-- `lecture-to-notes`：将 YouTube、Bilibili 和 X/Twitter 视频转换为中文 LaTeX 讲义与 PDF。
+- `lecture-to-notes`：将 YouTube、Bilibili、X/Twitter 和小红书视频转换为中文讲义。
 - `paper-to-html`：将学术论文转换为结构化中文 HTML 解读。
 
 本 Fork 的 `main` 分支只同步上游，实际定制开发位于默认分支 `tool-only`。
@@ -33,6 +33,13 @@ python scripts/video_source.py probe "<URL>"
 X/Twitter 支持 `https://x.com/<user>/status/<id>[/video/<n>]`。下载字幕后使用
 `scripts/check_srt_health.py` 检查结构，并在视频时长 10%、50%、90% 三处进行音画语义抽样；
 任一检查失败时回退到 Whisper。
+
+小红书支持 `xhslink.com` 短链以及 `/explore/<id>`、`/discovery/item/<id>`
+详情页。需要登录态时，可临时读取浏览器 Cookie；工具不会保存 Cookie：
+
+```bash
+python scripts/video_source.py probe "<小红书 URL>" --cookies-from-browser chrome
+```
 
 运行测试：
 
