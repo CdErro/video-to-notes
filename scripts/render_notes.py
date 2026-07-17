@@ -10,9 +10,13 @@ import re
 import shutil
 import subprocess
 import sys
+import math
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+FIGURE_PATH_PATTERN = re.compile(r"figures/figure_\d{3}\.jpg\Z")
 
 
 @dataclass(frozen=True)
@@ -32,6 +36,39 @@ def quality_rule(duration_seconds: float) -> QualityRule:
     if duration_seconds < 1800:
         return QualityRule("standard", 300, 5, 3, False)
     return QualityRule("long", 800, 8, 6, True)
+
+
+def markdown_image_paths(text: str) -> list[str]:
+    return [path.strip().replace("\\", "/") for path in re.findall(r"!\[[^]]*]\(([^)]+)\)", text)]
+
+
+def load_figure_manifest(path: Path) -> list[dict]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("figures"), list):
+        raise ValueError("root must contain a figures array")
+    records: list[dict] = []
+    seen: set[str] = set()
+    for item in payload["figures"]:
+        if not isinstance(item, dict):
+            raise ValueError("each figure must be an object")
+        figure_path = item.get("path")
+        timestamp = item.get("timestamp")
+        if not isinstance(figure_path, str) or not FIGURE_PATH_PATTERN.fullmatch(figure_path):
+            raise ValueError("figure path must match figures/figure_NNN.jpg")
+        if figure_path in seen:
+            raise ValueError("figure paths must be unique")
+        if (
+            not isinstance(timestamp, (int, float))
+            or isinstance(timestamp, bool)
+            or not math.isfinite(timestamp)
+            or timestamp < 0
+        ):
+            raise ValueError("figure timestamp must be a non-negative finite number")
+        if any(key in item and not isinstance(item[key], str) for key in ("section", "caption")):
+            raise ValueError("figure section and caption must be strings")
+        seen.add(figure_path)
+        records.append(item)
+    return records
 
 
 def assess_notes(
@@ -69,6 +106,13 @@ def assess_notes(
         "table": bool(re.search(r"^\|.+\|\s*$", text, re.MULTILINE)),
         "figure": bool(re.search(r"!\[[^]]*]\([^)]+\)", text)),
     }
+    image_paths = markdown_image_paths(text)
+    if any("contact" in path.casefold() for path in image_paths):
+        issues.append("Contact sheets are analysis artifacts and cannot be embedded in notes.md")
+    if any(not FIGURE_PATH_PATTERN.fullmatch(path) for path in image_paths):
+        issues.append("Final note figures must use single-frame files under figures/")
+    if any(FIGURE_PATH_PATTERN.fullmatch(path) and not (output_dir / path).is_file() for path in image_paths):
+        issues.append("Every final note figure must exist under figures/")
     for signal in sorted(source_signals):
         if signal in checks and not checks[signal]:
             issues.append(f"Source contains {signal}, but notes.md does not")
@@ -121,10 +165,26 @@ def render(
         "duration_seconds": duration_seconds,
         "quality_rule": asdict(rule),
         "source_signals": sorted(source_signals),
+        "figures": [],
         "outputs": {"notes.md": {"status": "ready", "path": str(notes.resolve())}},
         "degraded": bool(issues),
         "degradation_reasons": issues,
     }
+    figure_manifest = output_dir / "figure_manifest.json"
+    if figure_manifest.is_file():
+        try:
+            manifest["figures"] = load_figure_manifest(figure_manifest)
+        except (OSError, ValueError, json.JSONDecodeError):
+            issues.append("figure_manifest.json is invalid")
+    note_figure_paths = set(markdown_image_paths(text))
+    manifest_figure_paths = {
+        item["path"] for item in manifest["figures"] if isinstance(item, dict) and "path" in item
+    }
+    if note_figure_paths and not figure_manifest.is_file():
+        issues.append("notes.md figures require figure_manifest.json")
+    elif note_figure_paths != manifest_figure_paths:
+        issues.append("notes.md figure references must match figure_manifest.json")
+    manifest["degraded"] = bool(issues)
     manifest_path = output_dir / "run_manifest.json"
     if issues:
         write_manifest(manifest_path, manifest)

@@ -74,6 +74,11 @@ Include formulas, code, tables, and figures only when they occur in the source. 
 do occur, represent them faithfully and pass the matching `--source-signals` value to the
 quality check. Never invent a diagram, equation, example, or conclusion.
 
+Contact sheets are analysis artifacts only. Ask the Provider for figure timestamps, then
+use `scripts/media_evidence.py figures` to extract full-resolution single frames under
+`figures/`. Final Markdown must reference those `figures/figure_*.jpg` files and must
+never embed a contact sheet.
+
 ## 5. Validate and render
 
 Always deliver Markdown. Request other formats only when needed:

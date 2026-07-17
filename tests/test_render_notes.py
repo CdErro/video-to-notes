@@ -90,6 +90,85 @@ class RenderNotesTests(unittest.TestCase):
 
         self.assertIn("Source contains code, but notes.md does not", issues)
 
+    def test_contact_sheet_is_rejected_as_final_figure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            text = valid_short_notes() + "\n![分析拼图](contact_01.jpg)\n"
+            _, issues = render_notes.assess_notes(text, 120, {"figure"}, root)
+
+        self.assertIn(
+            "Contact sheets are analysis artifacts and cannot be embedded in notes.md",
+            issues,
+        )
+
+    def test_renamed_contact_sheet_and_traversal_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path in ("figures/sheet_01.jpg", "figures/../evidence/sheet_01.jpg"):
+                text = valid_short_notes() + f"\n![绕过]({path})\n"
+                _, issues = render_notes.assess_notes(text, 120, set(), root)
+                self.assertIn(
+                    "Final note figures must use single-frame files under figures/", issues
+                )
+
+    def test_single_frame_figure_and_mapping_enter_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "draft.md"
+            source.write_text(
+                valid_short_notes() + "\n![界面](figures/figure_001.jpg)\n",
+                encoding="utf-8",
+            )
+            (root / "figures").mkdir()
+            (root / "figures/figure_001.jpg").touch()
+            (root / "figure_manifest.json").write_text(
+                json.dumps({"figures": [{"path": "figures/figure_001.jpg", "timestamp": 8}]}),
+                encoding="utf-8",
+            )
+            code, manifest = render_notes.render(
+                source, root, "markdown", 120, "xiaohongshu", "general", "none", {"figure"}
+            )
+
+        self.assertEqual(0, code)
+        self.assertEqual(8, manifest["figures"][0]["timestamp"])
+
+    def test_invalid_figure_manifest_marks_run_degraded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "draft.md"
+            source.write_text(valid_short_notes(), encoding="utf-8")
+            (root / "figure_manifest.json").write_text("[]", encoding="utf-8")
+
+            code, manifest = render_notes.render(
+                source, root, "markdown", 120, "youtube", "general", "none", set()
+            )
+
+        self.assertEqual(2, code)
+        self.assertTrue(manifest["degraded"])
+        self.assertIn("figure_manifest.json is invalid", manifest["degradation_reasons"])
+
+    def test_manifest_requires_array_and_matching_note_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "draft.md"
+            source.write_text(
+                valid_short_notes() + "\n![界面](figures/figure_001.jpg)\n",
+                encoding="utf-8",
+            )
+            (root / "figures").mkdir()
+            (root / "figures/figure_001.jpg").touch()
+            (root / "figure_manifest.json").write_text(
+                json.dumps({"figures": "bad"}), encoding="utf-8"
+            )
+
+            code, manifest = render_notes.render(
+                source, root, "markdown", 120, "youtube", "general", "none", {"figure"}
+            )
+
+        self.assertEqual(2, code)
+        self.assertTrue(manifest["degraded"])
+        self.assertIn("figure_manifest.json is invalid", manifest["degradation_reasons"])
+
     def test_missing_pdf_tools_are_recorded_as_unavailable(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch(
             "render_notes.shutil.which", return_value=None
