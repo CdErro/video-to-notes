@@ -1,0 +1,4 @@
+openai==2.44.0
+openai-whisper
+Pillow
+yt-dlp>=2026.6.9
