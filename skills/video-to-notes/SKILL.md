@@ -5,6 +5,17 @@ description: Convert YouTube, Bilibili, X/Twitter, or Xiaohongshu videos into ev
 
 # Video to Notes
 
+## One-command entry
+
+Run the repository pipeline from its root:
+
+```powershell
+conda run -n vid2rich python scripts/video_to_notes.py "<URL>" --provider kimi-cli --format markdown
+```
+
+Use `--output-dir <path> --resume` after interruption. Contact sheets are analysis-only inputs;
+the generated `notes.md` may reference only timestamp-selected `figures/figure_NNN.jpg` files.
+
 Produce Chinese `notes.md` from the source video. Preserve the old `lecture-to-notes`
 workflow only for compatibility; use this skill for new work.
 

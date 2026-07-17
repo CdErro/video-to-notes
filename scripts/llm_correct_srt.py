@@ -129,21 +129,25 @@ def load_frame_manifest(path: Path) -> dict[str, float]:
 def pick_frame(
     frames_dir: Path, t: float, manifest: dict[str, float] | None = None
 ) -> Path | None:
-    """选择最接近时间 t 的帧。仅支持以 fps=1/15 抽样、命名含数字后缀的 PNG。"""
-    pngs = sorted(frames_dir.glob("*.png"))
-    if not pngs:
+    """选择最接近时间 t 的 PNG/JPEG 证据帧。"""
+    images = sorted(
+        path
+        for path in frames_dir.iterdir()
+        if path.is_file() and path.suffix.casefold() in {".png", ".jpg", ".jpeg"}
+    )
+    if not images:
         return None
     # 尝试从文件名提取章节号和帧号：ch2_012.png 或 f_012.png
     best: Path | None = None
     best_diff = 1e18
-    for p in pngs:
+    for p in images:
         if manifest and p.name in manifest:
             nominal = manifest[p.name]
             diff = abs(nominal - t)
             if diff < best_diff:
                 best_diff, best = diff, p
             continue
-        m = re.search(r"0*(\d+)\.png$", p.name)
+        m = re.search(r"0*(\d+)\.(?:png|jpe?g)$", p.name, re.IGNORECASE)
         if not m:
             continue
         n = int(m.group(1))
@@ -309,6 +313,7 @@ def main():
     ap.add_argument("--provider", choices=("kimi-cli", "openai"), default="kimi-cli")
     ap.add_argument("--model", default="")
     ap.add_argument("--env-file", type=Path, default=Path(".env"))
+    ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--frame-manifest", type=Path)
     ap.add_argument("--domain", help="覆盖自动识别的词典领域")
     ap.add_argument("--glossary-root", type=Path, default=DEFAULT_USER_ROOT)
@@ -325,7 +330,7 @@ def main():
     manifest = load_frame_manifest(args.frame_manifest) if args.frame_manifest else None
     model = args.model or ("gpt-5.4-mini" if args.provider == "openai" else "")
     try:
-        provider = create_provider(args.provider, model, args.env_file)
+        provider = create_provider(args.provider, model, args.env_file, args.timeout)
     except ProviderError as error:
         print(error, file=sys.stderr)
         return 2

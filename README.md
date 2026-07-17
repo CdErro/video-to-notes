@@ -25,6 +25,20 @@ design/                   设计与实施文档
 
 ## 快速开始
 
+完整流程可通过一个命令运行；入口会先检查所选输出格式与 Provider 的环境，自动选择
+可用字幕或本地 Whisper，并把阶段状态写入输出目录：
+
+```powershell
+conda run -n vid2rich python scripts/video_to_notes.py "<URL>" `
+  --provider kimi-cli --format markdown
+```
+
+Kimi 默认使用 `kimi-code/kimi-for-coding`，可用 `--model` 覆盖；单次调用默认等待
+300 秒。中断后使用 `--output-dir <原目录> --resume` 继续。OpenAI 可通过 `--provider openai
+--model <模型名> --env-file .env` 使用；需要登录态的视频增加
+`--cookies-from-browser chrome`。无字幕且 Whisper 不可用时，非交互运行默认停止；只有明确
+传入 `--allow-visual-only` 才生成画面降级结果。
+
 检测视频源：
 
 ```bash

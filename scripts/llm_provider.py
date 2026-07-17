@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 
@@ -20,6 +21,8 @@ class Provider(Protocol):
     model: str
 
     def correct(self, prompt: str, image: Path | None, schema: dict) -> dict: ...
+
+    def generate(self, prompt: str, images: Sequence[Path], schema: dict) -> dict: ...
 
 
 def load_dotenv(path: Path) -> None:
@@ -109,8 +112,16 @@ class KimiCLIProvider:
         self.timeout = timeout
 
     def correct(self, prompt: str, image: Path | None, schema: dict) -> dict:
-        if image:
-            prompt += f"\n\n参考画面（请读取此本地文件）：{image.resolve()}"
+        return self.generate(prompt, [image] if image else [], schema)
+
+    def generate(self, prompt: str, images: Sequence[Path], schema: dict) -> dict:
+        prompt = (
+            "这是非交互结构化数据请求。不要进入 Plan Mode，不要创建计划文件；"
+            "直接读取必要输入并输出最终 JSON。\n\n" + prompt
+        )
+        if images:
+            paths = "\n".join(f"- {image.resolve()}" for image in images)
+            prompt += f"\n\n参考画面（请逐一读取这些本地文件）：\n{paths}"
         command = ["kimi", "-p", prompt]
         if self.model:
             command.extend(["-m", self.model])
@@ -130,10 +141,20 @@ class KimiCLIProvider:
             except json.JSONDecodeError:
                 continue
             candidates.extend(_json_strings(event))
+        validation_errors: list[str] = []
         for candidate in reversed(candidates):
-            parsed = _parse_json_object(candidate, schema)
+            try:
+                parsed = _parse_json_object(candidate, schema)
+            except ProviderError as error:
+                validation_errors.append(str(error))
+                continue
             if parsed is not None:
                 return parsed
+        if validation_errors:
+            raise ProviderError(
+                "Kimi CLI returned JSON that failed local validation: "
+                + validation_errors[-1]
+            )
         raise ProviderError("Kimi CLI returned no valid final JSON object")
 
 
@@ -157,8 +178,11 @@ class OpenAIProvider:
         self.model = model
 
     def correct(self, prompt: str, image: Path | None, schema: dict) -> dict:
+        return self.generate(prompt, [image] if image else [], schema)
+
+    def generate(self, prompt: str, images: Sequence[Path], schema: dict) -> dict:
         content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
-        if image:
+        for image in images:
             mime = "image/png" if image.suffix.lower() == ".png" else "image/jpeg"
             encoded = base64.b64encode(image.read_bytes()).decode("ascii")
             content.append(
@@ -185,9 +209,9 @@ class OpenAIProvider:
         return parsed
 
 
-def create_provider(name: str, model: str, env_file: Path) -> Provider:
+def create_provider(name: str, model: str, env_file: Path, timeout: int = 300) -> Provider:
     if name == "kimi-cli":
-        return KimiCLIProvider(model=model)
+        return KimiCLIProvider(model=model, timeout=timeout)
     if name == "openai":
-        return OpenAIProvider(model=model, env_file=env_file)
+        return OpenAIProvider(model=model, env_file=env_file, timeout=timeout)
     raise ProviderError(f"Unsupported provider: {name}")
