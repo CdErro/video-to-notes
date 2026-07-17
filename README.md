@@ -36,6 +36,21 @@ X/Twitter 支持 `https://x.com/<user>/status/<id>[/video/<n>]`。下载字幕�
 `scripts/check_srt_health.py` 检查结构，并在视频时长 10%、50%、90% 三处进行音画语义抽样；
 任一检查失败时回退到 Whisper。
 
+无字幕视频默认使用 `faster-whisper small`。在无 NVIDIA CUDA 的机器上采用 CPU
+INT8；当前推荐配置为 8 个 CPU 线程、自动语言识别和 VAD。安装脚本会把模型预下载到
+用户缓存：
+
+```powershell
+.\setup.ps1 -Target conda:vid2rich
+conda run -n vid2rich python scripts/environment.py doctor --with-transcription --json
+```
+
+也可单独转写本地媒体：
+
+```powershell
+conda run -n vid2rich python scripts/transcribe.py run audio.wav --output raw.srt
+```
+
 小红书支持 `xhslink.com` 短链以及 `/explore/<id>`、`/discovery/item/<id>`
 详情页。需要登录态时，可临时读取浏览器 Cookie；工具不会保存 Cookie：
 
@@ -87,7 +102,7 @@ conda run -n vid2rich python -m unittest discover -s tests -v
 - `yt-dlp`
 - `ffmpeg`
 - Pandoc（生成 LaTeX/PDF 时）
-- Whisper（无可用字幕时）
+- faster-whisper `small`（无可用字幕时）
 - XeLaTeX（生成 PDF 时）
 
 平台安装方式与完整工作流请查看对应 `SKILL.md`。

@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -26,6 +27,43 @@ class EnvironmentDoctorTests(unittest.TestCase):
 
         self.assertTrue({"Pandoc", "XeLaTeX", "openai", "OPENAI_API_KEY"} <= required)
         self.assertNotIn("Kimi Code CLI", required)
+
+    def test_transcription_profile_requires_engine_and_model(self):
+        required = environment.required_names("markdown", "none", with_transcription=True)
+
+        self.assertIn("Faster Whisper", required)
+        self.assertIn("Whisper model", required)
+
+    def test_cached_whisper_model_is_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "models--Systran--faster-whisper-small/snapshots/revision/model.bin"
+            model.parent.mkdir(parents=True)
+            model.touch()
+            (model.parent / "config.json").touch()
+            (model.parent / "tokenizer.json").touch()
+
+            result = environment.check_whisper_model(True, "small", str(root))
+
+        self.assertEqual("ready", result.status)
+
+    def test_incomplete_whisper_cache_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "models--Systran--faster-whisper-small/snapshots/revision/model.bin"
+            model.parent.mkdir(parents=True)
+            model.touch()
+
+            result = environment.check_whisper_model(True, "small", str(root))
+
+        self.assertEqual("required_missing", result.status)
+
+    def test_runtime_whisper_fields_are_validated_by_doctor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "bad.toml"
+            config.write_text("[whisper]\ncpu_threads=0\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "cpu_threads"):
+                environment.whisper_settings(config)
 
     @mock.patch("environment.shutil.which", return_value=None)
     def test_missing_required_command_is_reported(self, _which):
@@ -69,15 +107,32 @@ class EnvironmentDoctorTests(unittest.TestCase):
 
 
 class EnvironmentInstallTests(unittest.TestCase):
+    @mock.patch("environment.subprocess.run")
+    def test_target_requirements_version_check_controls_readiness(self, run):
+        run.side_effect = [
+            mock.Mock(returncode=0),
+            mock.Mock(returncode=1),
+        ]
+
+        self.assertTrue(environment.target_requirements_ready(["target-python"]))
+        self.assertFalse(environment.target_requirements_ready(["target-python"]))
+        self.assertIn("faster-whisper", run.call_args_list[0].args[0][-1])
+
+    @mock.patch("environment.target_requirements_ready", return_value=True)
     @mock.patch("environment.target_python")
-    def test_installation_is_idempotent_when_everything_is_ready(self, target_python):
+    def test_installation_is_idempotent_when_everything_is_ready(
+        self, target_python, _requirements_ready
+    ):
         target_python.return_value = (["python"], [])
         ready = [environment.CheckResult("FFmpeg", "command", "ready", True, "ok")]
 
         self.assertEqual([], environment.installation_commands(ready, "conda:vid2rich"))
 
+    @mock.patch("environment.target_requirements_ready", return_value=False)
     @mock.patch("environment.target_python")
-    def test_missing_python_package_uses_target_interpreter(self, target_python):
+    def test_missing_python_package_uses_target_interpreter(
+        self, target_python, _requirements_ready
+    ):
         target_python.return_value = (["conda", "run", "-n", "vid2rich", "python"], [])
         missing = [environment.CheckResult("openai", "python_package", "required_missing", True, "missing")]
 
@@ -86,8 +141,66 @@ class EnvironmentInstallTests(unittest.TestCase):
         self.assertEqual("conda", commands[0][0])
         self.assertIn(str(environment.REQUIREMENTS_PATH), commands[0])
 
+    @mock.patch("environment.target_requirements_ready", return_value=True)
     @mock.patch("environment.target_python")
-    def test_optional_python_package_is_not_installed(self, target_python):
+    def test_missing_model_adds_predownload_command(self, target_python, _requirements_ready):
+        target_python.return_value = (["target-python"], [])
+        missing = [
+            environment.CheckResult(
+                "Whisper model", "model", "required_missing", True, "small not cached"
+            )
+        ]
+
+        commands = environment.installation_commands(missing, "conda:vid2rich", "small")
+
+        self.assertEqual("target-python", commands[0][0])
+        self.assertIn("download-model", commands[0])
+
+    @mock.patch("environment.target_requirements_ready", return_value=False)
+    @mock.patch("environment.target_python")
+    def test_fresh_target_installs_requirements_before_model(
+        self, target_python, _requirements_ready
+    ):
+        target_python.return_value = (
+            ["conda", "run", "-n", "fresh", "python"],
+            [["conda", "create", "-n", "fresh"]],
+        )
+        missing = [
+            environment.CheckResult(
+                "Whisper model", "model", "required_missing", True, "not cached"
+            )
+        ]
+
+        commands = environment.installation_commands(missing, "conda:fresh", "small")
+
+        self.assertIn("create", commands[0])
+        self.assertIn("pip", commands[1])
+        self.assertIn("download-model", commands[2])
+
+    @mock.patch("environment.target_requirements_ready", return_value=True)
+    @mock.patch("environment.target_python")
+    def test_model_download_uses_configured_model_and_cache(
+        self, target_python, _requirements_ready
+    ):
+        target_python.return_value = (["target-python"], [])
+        missing = [
+            environment.CheckResult(
+                "Whisper model", "model", "required_missing", True, "not cached"
+            )
+        ]
+
+        commands = environment.installation_commands(
+            missing, "conda:vid2rich", "base", "D:/models"
+        )
+
+        self.assertIn("base", commands[0])
+        self.assertEqual("D:/models", commands[0][-1])
+
+    @mock.patch("environment.target_requirements_ready", return_value=True)
+    @mock.patch("environment.target_python")
+    def test_optional_python_package_is_not_installed(
+        self, target_python, _requirements_ready
+    ):
         target_python.return_value = (["python"], [])
         missing = [
             environment.CheckResult(
@@ -114,6 +227,7 @@ class EnvironmentInstallTests(unittest.TestCase):
         setup = (environment.ROOT / "setup.ps1").read_text(encoding="utf-8")
 
         self.assertIn('$Target = "venv:.venv"', setup)
+        self.assertIn("--with-transcription", setup)
 
     @mock.patch("environment.installation_commands", return_value=[])
     @mock.patch("environment.manual_install_guidance", return_value=["Install FFmpeg"])
@@ -133,6 +247,17 @@ class EnvironmentInstallTests(unittest.TestCase):
 
         payload = json.loads(printer.call_args.args[0])
         self.assertEqual("ready", payload["checks"][0]["status"])
+
+    def test_invalid_whisper_config_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "bad.toml"
+            config.write_text("[whisper\n", encoding="utf-8")
+            with mock.patch.object(
+                sys, "argv", ["environment.py", "doctor", "--config", str(config)]
+            ):
+                result = environment.main()
+
+        self.assertEqual(2, result)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ Read [quality-rules.md](references/quality-rules.md) before drafting notes.
 Run a read-only check for the requested output and Provider:
 
 ```powershell
-conda run -n vid2rich python <repo>/scripts/environment.py doctor --json --format markdown --provider kimi-cli
+conda run -n vid2rich python <repo>/scripts/environment.py doctor --json --format markdown --provider kimi-cli --with-transcription
 ```
 
 Use `setup.ps1` or `setup.sh` only after the user authorizes installation. Never install
@@ -46,7 +46,14 @@ under `runs/<run-name>/`; do not commit them.
 ## 3. Prepare evidence
 
 Use a healthy supplied caption track when available. Otherwise extract audio and run
-Whisper with a prompt built from the general glossary and the detected domain:
+faster-whisper with a prompt built from the general glossary and the detected domain.
+The default multilingual profile is `small`, CPU INT8, up to 8 threads, and VAD:
+
+```powershell
+conda run -n vid2rich python <repo>/scripts/transcribe.py run audio.wav --output raw.srt --context "<video context>"
+```
+
+Build or inspect the prompt independently when diagnosing terminology:
 
 ```powershell
 conda run -n vid2rich python <repo>/scripts/glossary.py prompt --context "<video context>"
