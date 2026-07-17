@@ -55,6 +55,28 @@ class PipelineUnitTests(unittest.TestCase):
         )
         self.assertEqual("render exited with 2", video_to_notes.render_failure(2, {}))
 
+    def test_resume_requires_outputs_for_the_current_format(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "notes.md").write_text("# notes", encoding="utf-8")
+            (root / "run_manifest.json").write_text(
+                json.dumps({"outputs": {"notes.md": {"status": "ready"}}}),
+                encoding="utf-8",
+            )
+            self.assertTrue(video_to_notes.requested_outputs_ready(root, "markdown"))
+            self.assertFalse(video_to_notes.requested_outputs_ready(root, "pdf"))
+            (root / "notes.pdf").touch()
+            (root / "run_manifest.json").write_text(
+                json.dumps({
+                    "outputs": {
+                        "notes.md": {"status": "ready"},
+                        "notes.pdf": {"status": "ready"},
+                    }
+                }),
+                encoding="utf-8",
+            )
+            self.assertTrue(video_to_notes.requested_outputs_ready(root, "pdf"))
+
     def test_query_tokens_are_not_persisted(self):
         self.assertEqual(
             "https://www.xiaohongshu.com/explore/abc",

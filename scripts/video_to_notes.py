@@ -285,6 +285,25 @@ def render_failure(code: int, manifest: dict) -> str | None:
     return "; ".join(manifest.get("degradation_reasons", [])) or f"render exited with {code}"
 
 
+def requested_outputs_ready(output_dir: Path, output_format: str) -> bool:
+    manifest_path = output_dir / "run_manifest.json"
+    if not manifest_path.is_file():
+        return False
+    required = ["notes.md"]
+    if output_format in {"latex", "all"}:
+        required.append("notes.tex")
+    if output_format in {"pdf", "all"}:
+        required.append("notes.pdf")
+    try:
+        outputs = json.loads(manifest_path.read_text(encoding="utf-8"))["outputs"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+    return all(
+        outputs.get(name, {}).get("status") == "ready" and (output_dir / name).is_file()
+        for name in required
+    )
+
+
 def execute(args: argparse.Namespace) -> Path:
     config_path = args.config
     model = provider_model(args.provider, args.model)
@@ -332,8 +351,7 @@ def execute(args: argparse.Namespace) -> Path:
     if (
         args.resume
         and stage_done("render")
-        and (output_dir / "notes.md").is_file()
-        and (output_dir / "run_manifest.json").is_file()
+        and requested_outputs_ready(output_dir, args.format)
     ):
         return output_dir
 
