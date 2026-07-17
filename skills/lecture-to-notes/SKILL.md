@@ -5,6 +5,9 @@ description: Use when users provide YouTube, Bilibili, or X(Twitter) lecture URL
 
 # Lecture to Notes
 
+Compatibility entry: use the `video-to-notes` skill for new requests. This legacy
+workflow remains available for callers that require the original LaTeX-first contract.
+
 Turn a YouTube, Bilibili, or X/Twitter lecture video into a complete, compilable `.tex` note set and a rendered PDF.
 
 ## Dependencies

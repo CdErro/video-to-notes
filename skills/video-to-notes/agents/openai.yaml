@@ -1,0 +1,4 @@
+interface:
+  display_name: "Video to Notes"
+  short_description: "Convert supported videos into structured Chinese notes"
+  default_prompt: "Use $video-to-notes to turn this video into structured Chinese notes."
