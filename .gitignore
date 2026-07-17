@@ -5,3 +5,23 @@ __pycache__/
 # Claude Code per-project settings and lecture-to-notes working dirs
 .claude/
 workspace/
+
+# Generated media and publication artifacts
+runs/
+artifacts/
+docs/pdfs/
+docs/papers/
+
+# Local Python environments and caches
+.venv/
+.pytest_cache/
+*.pyo
+
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
