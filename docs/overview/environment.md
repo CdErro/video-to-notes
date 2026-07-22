@@ -26,6 +26,18 @@
 conda run -n vid2rich python scripts/environment.py doctor --with-transcription --json
 ```
 
+Windows 控制台若在转发中文错误信息时出现 `UnicodeEncodeError`，改用 UTF-8 并关闭 Conda
+输出捕获：
+
+```powershell
+chcp 65001 | Out-Null
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+conda run --no-capture-output -n vid2rich python scripts/environment.py doctor --with-transcription --json
+```
+
+该命令仍会在任何必需项不是 `ready` 时返回 1；能打印 JSON 不代表检查通过。
+
 状态包括 `ready`、`optional_missing`、`required_missing`、`found_unusable` 和
 `version_unsupported`。`required` 由输出格式、Provider 和是否启用转写共同决定。
 

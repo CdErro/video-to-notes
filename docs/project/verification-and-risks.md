@@ -8,7 +8,7 @@
 | 类型 | 方法 | 结果 | 未覆盖范围 |
 |---|---|---|---|
 | 完整单元测试 | `conda run -n vid2rich python -m unittest discover -s tests -v` | 2026-07-22：134 tests，OK，3 个 zsh-only skip | 真实网络、凭据和系统渲染器 |
-| 环境检测 | `environment.py doctor --with-transcription --json` | Python/包/Kimi/模型存在；见下文 | 当前受限会话不能启动 FFmpeg |
+| 环境检测 | UTF-8 下执行 `conda run --no-capture-output ... doctor --with-transcription --json` | JSON 可读取，但因 FFmpeg/ffprobe `found_unusable` 返回 1 | 当前受限会话不能启动 FFmpeg |
 | 小红书本地 smoke | 短、中、长三个样例 | 曾生成 Markdown；最终图片无 contact sheet 引用 | 短/中早于最终 fail-closed 修复 |
 | Whisper 实测 | 中、长小红书媒体 | 曾生成 38/208 个 segment，中文识别 | 性能、更多语种、噪声视频 |
 | Provider | Kimi 本地运行及两类 Provider mock | 长样例曾完成 Kimi；单元测试通过 | 真实 OpenAI 服务 |
@@ -23,6 +23,10 @@ Ready/已发现：Python 3.13.14、yt-dlp 2026.7.4、Pillow 12.3.0、faster-whis
 Optional missing：Pandoc、XeLaTeX、ImageMagick、OPENAI_API_KEY。FFmpeg/ffprobe 8.1.2
 路径存在，但本次受限会话启动返回 `[WinError 5]`，因此 doctor 报 `found_unusable`。这项结果需
 在普通用户终端复核，不能标记为本轮通过。
+
+普通 `conda run ... --json` 还可能在 Windows GBK 控制台转发上述中文错误时触发
+`UnicodeEncodeError`。设置 UTF-8 并使用 `--no-capture-output` 可稳定获得 JSON，但只解决
+输出编码，不会把 FFmpeg 状态变为 `ready`。
 
 ## 已修复缺陷
 
@@ -64,6 +68,8 @@ Optional missing：Pandoc、XeLaTeX、ImageMagick、OPENAI_API_KEY。FFmpeg/ffpr
 conda run -n vid2rich python scripts/environment.py doctor --json
 conda run -n vid2rich python -m unittest discover -s tests -v
 ```
+
+需要诊断中文错误时，按[环境依赖](../overview/environment.md)中的 Windows UTF-8 命令执行。
 
 真实测试还应检查退出码、`pipeline_state.json`、`run_manifest.json`、`notes_failure.json`、
 图片路径和敏感信息，而不能只检查 `notes.md` 是否存在。
