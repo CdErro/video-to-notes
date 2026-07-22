@@ -43,6 +43,10 @@ use real credentials in automated tests. Run the full suite before every PR.
 
 ## Commit & Pull Request Guidelines
 
+Before any branch, stage, commit, push, PR, merge, branch deletion, or upstream-sync
+operation, read and follow [`docs/project/git-workflow.md`](docs/project/git-workflow.md).
+That document is authoritative for repository-specific Git routing and protected branches.
+
 Follow Conventional Commits, for example `feat: support source`, `fix: reject unsafe
 redirect`, or `docs: update workflow`. Keep commits focused. PRs target `tool-only`,
 describe user-visible changes, list verification commands, and link relevant issues.
